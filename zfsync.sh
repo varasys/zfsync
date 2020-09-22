@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
 # based on posix scripting tutorial at: https://www.grymoire.com/Unix/Sh.html
 set -eu # fast fail on errors and undefined variables
+
 # set -x
 
 # define these in the environment to change them

@@ -21,11 +21,15 @@ sync() {
   init() {
     printf "\ninitiating initial sync: %s ...\n" "${TIMESTAMP}"
     zfs snapshot -r "${SOURCE}/${DATASET}@${TIMESTAMP}"
+
     zfs send -LRw "${SOURCE}/${DATASET}@${TIMESTAMP}" \
       | "${PV}" \
-      | zfs receive -Fv "${TARGET}/${SOURCE}"
+      | zfs receive -o canmount=noauto -Fv "${TARGET}/${SOURCE}"
 
-    # TODO add holds to the snapshots just transferred
+    printf "\napplying holds ..."
+    zfs hold -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}/${DATASET}@${TIMESTAMP}"
+    zfs hold -r "io.varasys.zfsync: ${SOURCE}" "${TARGET}/${SOURCE}@${TIMESTAMP}"
+    printf " finished\n"
 
     printf "\nfinished initial sync\n\n"
   }
@@ -39,11 +43,20 @@ sync() {
     )"
     LAST="${LASTSNAP##*@}" # use replacement to get snapshot part only
     zfs snapshot -r "${SOURCE}/${DATASET}@${TIMESTAMP}"
-    zfs send -Lw -I "@${LAST}" "${SOURCE}/${DATASET}@${TIMESTAMP}" \
+
+    zfs send -LRw -I "@${LAST}" "${SOURCE}/${DATASET}@${TIMESTAMP}" \
       | "${PV}" \
       | zfs receive -Fv "${TARGET}/${SOURCE}"
 
-    # TODO add holds to latest snapshots and remove holds from previous ones
+    printf "\napplying holds ..."
+    zfs hold -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}/${DATASET}@${TIMESTAMP}"
+    zfs hold -r "io.varasys.zfsync: ${SOURCE}" "${TARGET}/${SOURCE}@${TIMESTAMP}"
+    printf " finished\n"
+
+    printf "\nreleasing old holds ..."
+    zfs release -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}/${DATASET}@${LAST}"
+    zfs release -r "io.varasys.zfsync: ${SOURCE}" "${TARGET}/${SOURCE}@${LAST}"
+    printf " finished\n"
 
     printf "\nfinished sync\n\n"
   }
@@ -158,6 +171,14 @@ case "${1-'sync'}" in
   'sync')
     shift
     sync "$@"
+    ;;
+  'holds') # from: https://serverfault.com/questions/456301/how-to-check-that-all-zfs-snapshots-within-a-pool-are-without-holds-before-destr#877160
+    # this is for information only
+    zfs get -Ht snapshot userrefs \
+      | grep -v $'\t'0 \
+      | cut -d $'\t' -f 1 \
+      | tr '\n' '\0' \
+      | xargs -0 zfs holds
     ;;
   *)
     printf "\nusage: %s ( init_test [clean] | sync )\n\n" "$(basename "$0")"

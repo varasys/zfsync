@@ -1,12 +1,17 @@
 #!/usr/bin/env sh
-# based on posix scripting tutorial at: https://www.grymoire.com/Unix/Sh.html
+# based on posix scripting tutorials at:
+#   https://www.grymoire.com/Unix/Sh.html
+#   https://steinbaugh.com/posts/posix.html
+
 set -eu # fast fail on errors and undefined variables
 # set -x
 
 # define these in the environment to change them
-SOURCE="${SOURCE="source"}"
-TARGET="${TARGET="target"}"
-DATASET="${DATASET="sync"}"
+SOURCE="${SOURCE:="source"}"
+TARGET="${TARGET:="target"}"
+DATASET="${DATASET:="sync"}"
+
+WORKDIR="${WORKDIR:="$(realpath "$(pwd)")"}"
 
 sync() {
   TIMESTAMP="$(date -u +%F_%H-%M-%S_Z)"
@@ -19,14 +24,43 @@ sync() {
     zfs send -LRw "${SOURCE}/${DATASET}@${TIMESTAMP}" \
       | "${PV}" \
       | zfs receive -Fv "${TARGET}/${SOURCE}"
+
+    # TODO add holds to the snapshots just transferred
+
     printf "\nfinished initial sync\n\n"
   }
 
   sync() {
-    printf "sync not implemented yet\n"
+    printf "\ninitiating sync: %s ...\n" "${TIMESTAMP}"
+    LASTSNAP="$( \
+      zfs list -o name -t snapshot "${TARGET}/${SOURCE}" \
+      | sort -r \
+      | head -n 1 \
+    )"
+    LAST="${LASTSNAP##*@}" # use replacement to get snapshot part only
+    zfs snapshot -r "${SOURCE}/${DATASET}@${TIMESTAMP}"
+    zfs send -Lw -I "@${LAST}" "${SOURCE}/${DATASET}@${TIMESTAMP}" \
+      | "${PV}" \
+      | zfs receive -Fv "${TARGET}/${SOURCE}"
+
+    # TODO add holds to latest snapshots and remove holds from previous ones
+
+    printf "\nfinished sync\n\n"
   }
 
-  if ! zfs list "${TARGET}/${SOURCE}" > /dev/null 2>&1; then
+  if ! zpool list "${TARGET}" > /dev/null 2>&1; then # import the zpool since it is not already
+    set -x
+    trap 'zpool export "${TARGET}"' 0 # then export it again when script exits
+    if [ "${TARGET}" = 'target' ]; then
+      # when  testing with the backing file the file location must be specified
+      zpool import -d "${WORKDIR}/${TARGET}.zfs" "${TARGET}"
+    else
+      # when a device is used zpool will scan for the pool automatically
+      zpool import "${TARGET}"
+    fi
+  fi
+
+  if ! zfs list -t snapshot "${TARGET}/${SOURCE}" > /dev/null 2>&1; then
     init
   else
     sync
@@ -35,12 +69,11 @@ sync() {
 
 init_test() {
   # create backing files and zpool for testing
-  WORKDIR="${WORKDIR="$(realpath "$(pwd)")"}"
   SOURCEFILE="${WORKDIR}/${SOURCE}.zfs"
   TARGETFILE="${WORKDIR}/${TARGET}.zfs"
 
   # delete old stuff if "clean" arg provided
-  if [ "${1-""}" = 'clean' ]; then
+  if [ "${1-''}" = 'clean' ]; then
     printf "\nremoving existing zpools and backing files ...\n"
 
     delete_zpool() {

@@ -1,10 +1,37 @@
 #!/usr/bin/env sh
 # based on posix scripting tutorial at: https://www.grymoire.com/Unix/Sh.html
-set -eu
+set -eu # fast fail on errors and undefined variables
 # set -x
 
+# define these in the environment to change them
 SOURCE="${SOURCE="source"}"
 TARGET="${TARGET="target"}"
+DATASET="${DATASET="sync"}"
+
+sync() {
+  TIMESTAMP="$(date -u +%F_%H-%M-%S_Z)"
+  # use pv to monitor throughput if available
+  PV="$(command -v pv || command -v cat)"
+
+  init() {
+    printf "\ninitiating initial sync: %s ...\n" "${TIMESTAMP}"
+    zfs snapshot -r "${SOURCE}/${DATASET}@${TIMESTAMP}"
+    zfs send -LRw "${SOURCE}/${DATASET}@${TIMESTAMP}" \
+      | "${PV}" \
+      | zfs receive -Fv "${TARGET}/${SOURCE}"
+    printf "\nfinished initial sync\n\n"
+  }
+
+  sync() {
+    printf "sync not implemented yet\n"
+  }
+
+  if ! zfs list "${TARGET}/${SOURCE}" > /dev/null 2>&1; then
+    init
+  else
+    sync
+  fi
+}
 
 init_test() {
   # create backing files and zpool for testing
@@ -77,8 +104,8 @@ init_test() {
   create_backing_file "${TARGETFILE}"
   create_zpool "${SOURCE}" "${SOURCEFILE}"
   create_zpool "${TARGET}" "${TARGETFILE}"
-  for dataset in "nosync" "sync" "sync/first" "sync/second"; do
-    create_dataset "${SOURCE}/${dataset}"
+  for filesystem in "no${DATASET}" "${DATASET}" "${DATASET}/first" "${DATASET}/second" "${DATASET}/second/deeper"; do
+    create_dataset "${SOURCE}/${filesystem}"
   done
   printf "finished creating testing backing files and zpools\n"
 
@@ -89,10 +116,6 @@ init_test() {
   printf "\ntarget datasets:\n"
   zfs list -r "${TARGET}"
   printf "\n"
-}
-
-sync() {
-  echo "not implemented yet"
 }
 
 case "${1-'sync'}" in

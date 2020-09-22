@@ -80,12 +80,15 @@ init_test() {
   for dataset in "nosync" "sync" "sync/first" "sync/second"; do
     create_dataset "${SOURCE}/${dataset}"
   done
+  printf "finished creating testing backing files and zpools\n"
 
-  printf "\n%s\n\n%s\n\n%s\n\n" \
-    "$(zpool list)" \
-    "$(zfs list -r "${SOURCE}")" \
-    "$(zfs list -r "${TARGET}")"
-  printf "finished creating testing backing files and zpools\n\n"
+  printf "\ncurrent zpools:\n"
+  zpool list
+  printf "\nsource datasets:\n"
+  zfs list -r "${SOURCE}"
+  printf "\ntarget datasets:\n"
+  zfs list -r "${TARGET}"
+  printf "\n"
 }
 
 sync() {
@@ -102,6 +105,6 @@ case "${1-'sync'}" in
     sync "$@"
     ;;
   *)
-    printf "\nusage: %s (init_test [clean] | sync)\n\n" "$(basename "$0")"
+    printf "\nusage: %s ( init_test [clean] | sync )\n\n" "$(basename "$0")"
     ;;
 esac

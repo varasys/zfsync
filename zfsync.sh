@@ -1,13 +1,19 @@
 #!/usr/bin/env sh
+# ©, 2020, Casey Witt
+# developed for zfs-0.8.4-1
+# hosted at https://github.com/varasys/zfsync
 # based on posix scripting tutorials at:
 #   https://www.grymoire.com/Unix/Sh.html
 #   https://steinbaugh.com/posts/posix.html
 
-set -eu # fast fail on errors and undefined variables
-# set -x
 
+# TODO accomidate adding new datesets to the source (currently need to manually sync first)
+# TODO accomidate pruning old snapshots that don't have holds (currently does not do this at all)
 # TODO handle failure and resume gracefully
 # TODO add function to delete old snapshots
+
+set -eu # fast fail on errors and undefined variables
+# set -x
 
 # define these in the environment to change them
 SOURCE="${SOURCE:="source"}"
@@ -19,14 +25,14 @@ WORKDIR="${WORKDIR:="$(realpath "$(pwd)")"}"
 sync() {
   TIMESTAMP="$(date -u +%F_%H-%M-%S_Z)"
   # use pv to monitor throughput if available
-  PV="$(command -v pv || command -v cat)"
+  BUFFER="$(command -v mbuffer)"
 
   init() {
     printf "\ninitiating initial sync: %s ...\n" "${TIMESTAMP}"
     zfs snapshot -r "${SOURCE}/${DATASET}@${TIMESTAMP}"
 
     zfs send -LRw "${SOURCE}/${DATASET}@${TIMESTAMP}" \
-      | "${PV}" \
+      | "${BUFFER}" -m 1024 \
       | zfs receive -o canmount=noauto -Fv "${TARGET}/${SOURCE}"
 
     printf "\napplying holds ..."
@@ -48,7 +54,7 @@ sync() {
     zfs snapshot -r "${SOURCE}/${DATASET}@${TIMESTAMP}"
 
     zfs send -LRw -I "@${LAST}" "${SOURCE}/${DATASET}@${TIMESTAMP}" \
-      | "${PV}" \
+      | "${BUFFER}" -m 1024 \
       | zfs receive -Fv "${TARGET}/${SOURCE}"
 
     printf "\napplying holds ..."
@@ -65,7 +71,8 @@ sync() {
   }
 
   if ! zpool list "${TARGET}" > /dev/null 2>&1; then # import the zpool since it is not already
-    trap 'zpool export "${TARGET}"' 0 # then export it again when script exits
+    printf "\nimporting zpool: %s\n" "${TARGET}"
+    trap 'zpool export "${TARGET}" && printf "exporting zpool: %s\n\n" "${TARGET}"' 0 # then export it again when script exits
     if [ "${TARGET}" = 'target' ]; then
       # when  testing with the backing file the file location must be specified
       zpool import -d "${WORKDIR}/${TARGET}.zfs" "${TARGET}"

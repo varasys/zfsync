@@ -5,16 +5,16 @@ This script has two parts:
 * `zfsync.sh init_test [clean]`: will create two zfs zpools (source and target) with sparse files backing them, and some additional datasets in the source dataset to be used for experimenting with ZFS send/receive
 * `zfsync.sh sync`: will synchronize datasets between a source and target
 
-## Envirenment Variables
+## Environment Variables
 
 * `SOURCE`: the name of the source zpool (and backing file created with `zfsync.sh init_test`)
 * `TARGET`: the name of the target zpool (and backing file created with `zfsync.sh init_test`)
-* `DATASET`: the dataset on the source zpool to be syncronized to the target zpool
+* `DATASET`: the dataset on the source zpool to be synchronized to the target zpool
 * `WORKDIR`: the directory to contain the backing files with `zfsync.sh init_test`
 
 ## Normal Use
 
-For normal use, `SOURCE` and `TARGET` should be provided as environment variables.
+For normal use, `SOURCE`, `TARGET` and `DATASET` should be provided as environment variables.
 
 ``` sh
 SOURCE=scavenger TARGET=passport DATASET=files zfsync.sh sync

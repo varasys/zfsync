@@ -49,7 +49,6 @@ sync() {
   }
 
   if ! zpool list "${TARGET}" > /dev/null 2>&1; then # import the zpool since it is not already
-    set -x
     trap 'zpool export "${TARGET}"' 0 # then export it again when script exits
     if [ "${TARGET}" = 'target' ]; then
       # when  testing with the backing file the file location must be specified

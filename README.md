@@ -16,13 +16,17 @@ This script has two parts:
 
 For normal use, `SOURCE`, `TARGET` and `DATASET` should be provided as environment variables.
 
+In the example below, 'scavenger' and 'passport' are zpool names, and 'files' is the name of the dataset on 'scavenger' to by synced to 'passport'.
+
 ``` sh
 SOURCE=scavenger TARGET=passport DATASET=files zfsync.sh sync
 ```
 
 ## Systemd Integration
 
-The following files are provided to integrate into systemd:
+The following files are provided to integrate into systemd. Copy them to the '/etc/systemd/system/' directory and then run `sudo systemctl daemon-reload` and then `sudo systemctl enable --now zfsync.timer` to enable it, or run `systemctl start zfsync.service` to manually run it. The `zfsync.sh` script must be somewhere in the path (suggest '/usr/sbin/zfsync.sh').
+
+Update the [OnCalendar](https://www.freedesktop.org/software/systemd/man/systemd.time.html) value in the 'zfsync.timer' file to update how often it runs.
 
 * zfsync.service: service unit file (replace environment variables as needed)
 * zfsync.timer: timer unit file to run automatically periodically

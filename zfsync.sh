@@ -6,6 +6,9 @@
 set -eu # fast fail on errors and undefined variables
 # set -x
 
+# TODO handle failure and resume gracefully
+# TODO add function to delete old snapshots
+
 # define these in the environment to change them
 SOURCE="${SOURCE:="source"}"
 TARGET="${TARGET:="target"}"

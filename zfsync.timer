@@ -1,0 +1,9 @@
+[Unit]
+Description=zfsync.sh timer
+
+[Timer]
+Persistent=true
+OnCalendar=*-*-* 06,13,20:00:00
+
+[Install]
+WantedBy=timers.target

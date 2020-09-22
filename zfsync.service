@@ -1,0 +1,7 @@
+[Unit]
+Description=zfsync sync between zfs zpools
+
+[Service]
+Type=oneshot
+Environment="SOURCE=scavenger" "TARGET=passport" "DATASET=files"
+ExecStart=zfsync.sh sync

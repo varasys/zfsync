@@ -32,7 +32,7 @@ sync() {
     zfs snapshot -r "${SOURCE}/${DATASET}@${TIMESTAMP}"
 
     zfs send -LRw "${SOURCE}/${DATASET}@${TIMESTAMP}" \
-      | "${BUFFER}" -m 1024 \
+      | "${BUFFER}" -s 128k -m 500M \
       | zfs receive -o canmount=noauto -Fv "${TARGET}/${SOURCE}"
 
     printf "\napplying holds ..."
@@ -54,7 +54,7 @@ sync() {
     zfs snapshot -r "${SOURCE}/${DATASET}@${TIMESTAMP}"
 
     zfs send -LRw -I "@${LAST}" "${SOURCE}/${DATASET}@${TIMESTAMP}" \
-      | "${BUFFER}" -m 1024 \
+      | "${BUFFER}" -s 128k -m 500M \
       | zfs receive -Fv "${TARGET}/${SOURCE}"
 
     printf "\napplying holds ..."

@@ -11,14 +11,15 @@
 # TODO accomidate pruning old snapshots that don't have holds (currently does not do this at all)
 # TODO handle failure and resume gracefully
 # TODO add function to delete old snapshots
+# TODO use -s flag with `zfs receive` to implement resuming failed receives
 
 set -eu # fast fail on errors and undefined variables
 # set -x
 
 # define these in the environment to change them
-SOURCE="${SOURCE:="source"}"
-TARGET="${TARGET:="target"}"
-DATASET="${DATASET:="sync"}"
+SOURCE="${SOURCE:-"source"}"
+TARGET="${TARGET:-"target"}"
+DATASET="${DATASET="/sync"}"
 
 WORKDIR="${WORKDIR:="$(realpath "$(pwd)")"}"
 
@@ -29,14 +30,14 @@ sync() {
 
   init() {
     printf "\ninitiating initial sync: %s ...\n" "${TIMESTAMP}"
-    zfs snapshot -r "${SOURCE}/${DATASET}@${TIMESTAMP}"
+    zfs snapshot -r "${SOURCE}${DATASET}@${TIMESTAMP}"
 
-    zfs send -LRw "${SOURCE}/${DATASET}@${TIMESTAMP}" \
+    zfs send -LRw "${SOURCE}${DATASET}@${TIMESTAMP}" \
       | "${BUFFER}" -s 128k -m 500M \
       | zfs receive -o canmount=noauto -Fv "${TARGET}/${SOURCE}"
 
     printf "\napplying holds ..."
-    zfs hold -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}/${DATASET}@${TIMESTAMP}"
+    zfs hold -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}${DATASET}@${TIMESTAMP}"
     zfs hold -r "io.varasys.zfsync: ${SOURCE}" "${TARGET}/${SOURCE}@${TIMESTAMP}"
     printf " finished\n"
 
@@ -51,19 +52,19 @@ sync() {
       | head -n 1 \
     )"
     LAST="${LASTSNAP##*@}" # use replacement to get snapshot part only
-    zfs snapshot -r "${SOURCE}/${DATASET}@${TIMESTAMP}"
+    zfs snapshot -r "${SOURCE}${DATASET}@${TIMESTAMP}"
 
-    zfs send -LRw -I "@${LAST}" "${SOURCE}/${DATASET}@${TIMESTAMP}" \
+    zfs send -LRw -I "@${LAST}" "${SOURCE}${DATASET}@${TIMESTAMP}" \
       | "${BUFFER}" -s 128k -m 500M \
       | zfs receive -Fv "${TARGET}/${SOURCE}"
 
     printf "\napplying holds ..."
-    zfs hold -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}/${DATASET}@${TIMESTAMP}"
+    zfs hold -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}${DATASET}@${TIMESTAMP}"
     zfs hold -r "io.varasys.zfsync: ${SOURCE}" "${TARGET}/${SOURCE}@${TIMESTAMP}"
     printf " finished\n"
 
     printf "\nreleasing old holds ..."
-    zfs release -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}/${DATASET}@${LAST}"
+    zfs release -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}${DATASET}@${LAST}"
     zfs release -r "io.varasys.zfsync: ${SOURCE}" "${TARGET}/${SOURCE}@${LAST}"
     printf " finished\n"
 

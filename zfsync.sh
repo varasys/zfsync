@@ -25,16 +25,15 @@ WORKDIR="${WORKDIR:="$(realpath "$(pwd)")"}"
 
 sync() {
   TIMESTAMP="$(date -u +%F_%H-%M-%S_Z)"
-  # use pv to monitor throughput if available
+  # use mbuffer to monitor throughput if available
   BUFFER="$(command -v mbuffer)"
 
   init() {
     printf "\ninitiating initial sync: %s ...\n" "${TIMESTAMP}"
-    zfs snapshot -r "${SOURCE}${DATASET}@${TIMESTAMP}"
 
     zfs send -LRw "${SOURCE}${DATASET}@${TIMESTAMP}" \
       | "${BUFFER}" -s 128k -m 500M \
-      | zfs receive -o canmount=noauto -Fv "${TARGET}/${SOURCE}"
+      | zfs receive -o canmount=noauto -Fsv "${TARGET}/${SOURCE}"
 
     printf "\napplying holds ..."
     zfs hold -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}${DATASET}@${TIMESTAMP}"
@@ -52,11 +51,10 @@ sync() {
       | head -n 1 \
     )"
     LAST="${LASTSNAP##*@}" # use replacement to get snapshot part only
-    zfs snapshot -r "${SOURCE}${DATASET}@${TIMESTAMP}"
 
     zfs send -LRw -I "@${LAST}" "${SOURCE}${DATASET}@${TIMESTAMP}" \
       | "${BUFFER}" -s 128k -m 500M \
-      | zfs receive -Fv "${TARGET}/${SOURCE}"
+      | zfs receive -Fsv "${TARGET}/${SOURCE}"
 
     printf "\napplying holds ..."
     zfs hold -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}${DATASET}@${TIMESTAMP}"
@@ -70,6 +68,9 @@ sync() {
 
     printf "\nfinished sync\n\n"
   }
+
+  # take the snapshot early so if the script fails at least the snapshot will be taken
+  zfs snapshot -r "${SOURCE}${DATASET}@${TIMESTAMP}"
 
   if ! zpool list "${TARGET}" > /dev/null 2>&1; then # import the zpool since it is not already
     printf "\nimporting zpool: %s\n" "${TARGET}"

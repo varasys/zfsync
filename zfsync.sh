@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/sh
 # ©, 2020, Casey Witt
 # developed for zfs-0.8.4-1
 # hosted at https://github.com/varasys/zfsync
@@ -16,27 +16,43 @@
 set -eu # fast fail on errors and undefined variables
 # set -x
 
+[ "$(id -u)" -ne 0 ] && {
+  printf "restarting as root ...\n"
+  exec sudo "$0" "$@"
+}
+
 # define these in the environment to change them
 SOURCE="${SOURCE:-"source"}"
 TARGET="${TARGET:-"target"}"
-DATASET="${DATASET="/sync"}"
+DATASET="${DATASET="sync"}"
 
 WORKDIR="${WORKDIR:="$(realpath "$(pwd)")"}"
 
+TIMESTAMP="$(date -u +%F_%H-%M-%S_Z)"
+PREFIX="zfsync_"
+
+snap() {
+  # need to snapshot pool seperately since they can't be mixed in a single snap operation
+  for POOL in $(zpool list -Ho name); do
+    zfs list -r -Ho name,com.sun:auto-snapshot "$POOL" \
+      | awk -vsuf="@${PREFIX}${TIMESTAMP}" '{ if ($2 != "false") print $1 suf }' \
+      | sudo xargs zfs snap
+  done
+}
+
 sync() {
-  TIMESTAMP="$(date -u +%F_%H-%M-%S_Z)"
   # use mbuffer to monitor throughput if available
   BUFFER="$(command -v mbuffer)"
 
   init() {
     printf "\ninitiating initial sync: %s ...\n" "${TIMESTAMP}"
 
-    zfs send -LRw "${SOURCE}${DATASET}@${TIMESTAMP}" \
+    zfs send -LRw "${SOURCE}/${DATASET}@${TIMESTAMP}" \
       | "${BUFFER}" -s 128k -m 500M \
       | zfs receive -o canmount=noauto -Fsv "${TARGET}/${SOURCE}"
 
     printf "\napplying holds ..."
-    zfs hold -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}${DATASET}@${TIMESTAMP}"
+    zfs hold -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}/${DATASET}@${TIMESTAMP}"
     zfs hold -r "io.varasys.zfsync: ${SOURCE}" "${TARGET}/${SOURCE}@${TIMESTAMP}"
     printf " finished\n"
 
@@ -52,17 +68,17 @@ sync() {
     )"
     LAST="${LASTSNAP##*@}" # use replacement to get snapshot part only
 
-    zfs send -LRw -I "@${LAST}" "${SOURCE}${DATASET}@${TIMESTAMP}" \
+    zfs send -LRw -I "@${LAST}" "${SOURCE}/${DATASET}@${TIMESTAMP}" \
       | "${BUFFER}" -s 128k -m 500M \
       | zfs receive -Fsv "${TARGET}/${SOURCE}"
 
     printf "\napplying holds ..."
-    zfs hold -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}${DATASET}@${TIMESTAMP}"
+    zfs hold -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}/${DATASET}@${TIMESTAMP}"
     zfs hold -r "io.varasys.zfsync: ${SOURCE}" "${TARGET}/${SOURCE}@${TIMESTAMP}"
     printf " finished\n"
 
     printf "\nreleasing old holds ..."
-    zfs release -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}${DATASET}@${LAST}"
+    zfs release -r "io.varasys.zfsync: ${TARGET}" "${SOURCE}/${DATASET}@${LAST}"
     zfs release -r "io.varasys.zfsync: ${SOURCE}" "${TARGET}/${SOURCE}@${LAST}"
     printf " finished\n"
 
@@ -70,7 +86,7 @@ sync() {
   }
 
   # take the snapshot early so if the script fails at least the snapshot will be taken
-  zfs snapshot -r "${SOURCE}${DATASET}@${TIMESTAMP}"
+  zfs snapshot -r "${SOURCE}/${DATASET}@${TIMESTAMP}"
 
   if ! zpool list "${TARGET}" > /dev/null 2>&1; then # import the zpool since it is not already
     printf "\nimporting zpool: %s\n" "${TARGET}"
@@ -97,7 +113,7 @@ init_test() {
   TARGETFILE="${WORKDIR}/${TARGET}.zfs"
 
   # delete old stuff if "clean" arg provided
-  if [ "${1-''}" = 'clean' ]; then
+  if [ "${1-""}" = 'clean' ]; then
     printf "\nremoving existing zpools and backing files ...\n"
 
     delete_zpool() {
@@ -162,6 +178,7 @@ init_test() {
   create_zpool "${SOURCE}" "${SOURCEFILE}"
   create_zpool "${TARGET}" "${TARGETFILE}"
   for filesystem in "no${DATASET}" "${DATASET}" "${DATASET}/first" "${DATASET}/second" "${DATASET}/second/deeper"; do
+    echo "creating '${SOURCE}/${filesystem}"
     create_dataset "${SOURCE}/${filesystem}"
   done
   printf "finished creating testing backing files and zpools\n"
@@ -179,6 +196,10 @@ case "${1-'sync'}" in
   'init_test')
     shift
     init_test "$@"
+    ;;
+  'snap')
+    shift
+    snap "$@"
     ;;
   'sync')
     shift

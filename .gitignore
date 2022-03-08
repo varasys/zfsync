@@ -1,2 +1,3 @@
 source.zfs
 target.zfs
+workdir/

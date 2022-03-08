@@ -2,7 +2,7 @@
 
 This script has two parts:
 
-* `zfsync.sh init_test [clean]`: will create two zfs zpools (source and target) with sparse files backing them, and some additional datasets in the source dataset to be used for experimenting with ZFS send/receive
+* `zfsync.sh init_test [clean]`: (THIS IS NOT SPLIT OUT INTO ITS OWN `inittest.sh` SCRIPT) will create two zfs zpools (source and target) with sparse files backing them, and some additional datasets in the source dataset to be used for experimenting with ZFS send/receive
 * `zfsync.sh sync`: will synchronize datasets between a source and target
 
 ## Environment Variables

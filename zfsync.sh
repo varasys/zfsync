@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # ©, 2020, Casey Witt
 # developed for zfs-0.8.3
 # hosted at https://github.com/varasys/zfsync
@@ -23,11 +23,6 @@ set -eu # fast fail on errors and undefined variables
 # prefix for snapshots
 SNAPPREFIX="${SNAPPREFIX:-"zfsync_"}"
 
-if [ "$(id -u)" -ne 0 ]; then
-  printf "restarting as root ...\n"
-  exec sudo -E "$0" "$@"
-fi
-
 log() {
   msg="\e[1m$1\e[0m"; shift
   # shellcheck disable=2059 # allow variable in printf format string
@@ -46,65 +41,86 @@ error() {
   printf "$msg\n" "$@" >&2
 }
 
+if [ "$(id -u)" -ne 0 ]; then
+  warn "restarting as root ..."
+  exec sudo -E "$0" "$@"
+fi
+
 iterate() {
-  zfs list -r -Ho name,com.sun:auto-snapshot -s name "$1" \
-    | awk '{ if ($2 != "false") print $1 }'
+  # call this to return order list of datasets to operate on
+  ROOT="$1"
+  SUFFIX="${2:-}"
+  zfs list -r -Ho name,com.sun:auto-snapshot -s name "${ROOT}" \
+    | awk -v suf="${SUFFIX}" '{ if ($2 != "false") print $1 suf }'
 }
 
 snap() {
+  ROOT="$1"
   # shellcheck disable=2086 # no quotes needed around date args in the following line
   TIMESTAMP="$(date ${DATEARGS:--u +%F_%H-%M-%S_Z})"
-  for dataset in $(iterate "$1"); do
-    log "creating snapshot: %s" "${dataset}@${SNAPPREFIX}${TIMESTAMP}"
-    zfs snap "${dataset}@${SNAPPREFIX}${TIMESTAMP}"
-  done
+  SNAPSHOT="${SNAPPREFIX}${TIMESTAMP}"
+
+  SNAPSHOTS=$(iterate "${ROOT}" "@${SNAPSHOT}")
+  if [ -n "${SNAPSHOTS}" ]; then
+    #shellcheck disable=2086 # do not quote $SNAPSHOTS
+    zfs snap ${SNAPSHOTS}
+    for SNAP in ${SNAPSHOTS}; do
+      zfs bookmark "${SNAP}" "${SNAP%@*}#${SNAPSHOT}"
+    done
+  fi
 }
 
-sync() {
+connect() {
   HOST="$1"
-  POOL="$2"
-  # ssh -fN "$HOST"
-  # shellcheck disable=2064 # expand HOST at trap definition
-  # trap "$(command -v ssh) -O exit $HOST" EXIT INT TERM
+  SOCKET="${HOME}/.ssh/zfsync_${HOST}_$(date +%s%N)"
+  log 'connecting to ssh host: %s ...' "${HOST}"
+  ssh -fMN -S "${SOCKET}" "${HOST}"
+  # shellcheck disable=2064 # expand HOST and SOCKET at definition time
+  trap "disconnect '${HOST}' '${SOCKET}'" EXIT
+  RPC=$(printf '%s -o ControlMaster=no -S %s %s' "$(command -v ssh)" "${SOCKET}" "${HOST}")
+}
 
-  for FILESYSTEM in $(iterate "$POOL"); do
-    log "syncing dataset: %s" "$FILESYSTEM"
-    # remove the pool name prefix
-    DATASET="${FILESYSTEM#*/}"
-    # shellcheck disable=2029 # expand DATASET on client side
-    LATEST="$(zfs list -t snap -Ho name "$FILESYSTEM" | ssh "$HOST" list "$DATASET")"
-    if [ -n "$LATEST" ]; then
-      RESUMETOKEN="${LATEST##*@}"
-      SNAPSHOT="${LATEST%%@*}"
-      printf "executing incremental from %s with resume token %s\n" "$SNAPSHOT" "$RESUMETOKEN"
-      if [ "$RESUMETOKEN" != "-" ]; then
-        # shellcheck disable=2029 # expand DATASET on client side
-        zfs send -t "$RESUMETOKEN" | mbuffer | ssh "$HOST" 'recv' "$DATASET"
-      fi
-      # shellcheck disable=2029 # expand DATASET on client side
-      zfs send -w -I "@$SNAPSHOT" "$FILESYSTEM@$(zfs list -t snap -o name "$DATASET" | tail -n 1)" \
-        | mbuffer \
-        | ssh "$HOST" 'recv' "$DATASET"
+disconnect() {
+  HOST="$1"
+  SOCKET="$2"
+  log 'disconnecting from ssh host: %s ...' "${HOST}"
+  ssh -S "${SOCKET}" -O exit "${HOST}"
+}
+
+sync() { # this is run on the machine to be backed up
+  HOST="$1"
+  ROOT="$2"
+  # RPC=$(connect "$HOST") # Remote Precedure Call (RPC)
+  connect "$HOST" # this will define RPC variable
+  log 'syncing to host: %s' "${HOST}"
+
+  for SOURCE in $(iterate "${ROOT}"); do
+    log 'syncing dataset: %s' "${SOURCE}"
+    TARGET="${SOURCE#*/}" # remove the pool prefix
+    if [ -z "$($RPC exists "${TARGET}")" ]; then
+      error 'do full send'
     else
-      echo "executing initial transfer"
+      error 'do incremental send'
     fi
+    # for SNAPSHOT in $(zfs list -t snap -Ho name -S creation "${SOURCE}"); do
+    #   TARGET="${SNAPSHOT#*/}" # remove pool prefix name
+    #   LATEST=$($RPC latest "$TARGET")
+    # done
   done
 }
 
-recv() {
-  TARGET="$1"
-  log "client side working on: %s" "$TARGET"
+recv() { # run from authorized_keys file on the backup server (ie. command="zfsync.sh recv zpool/backups")
+  TARGET="$1" # the dataset path prefix including pool name (ie. zpool/backups)
   # shellcheck disable=2086 # use word splitting below
   set -- $SSH_ORIGINAL_COMMAND
-  case "$1" in
+  CMD="$1"
+  DATASET="$2"
+  case "${CMD}" in
+    'exists')
+      zfs list -Ho name "${TARGET}/${DATASET}" 2>/dev/null
+      ;;
     'list')
-      POOL="$2"
-      LATEST="$(cut -f 2 -d '@' \
-        | comm -12 <(zfs list -t snap -Ho name "$TARGET/$POOL" 2>/dev/null | cut -f 2 -d '@') - \
-        | tail -n 1)"
-      if [ -n "$LATEST" ]; then
-        printf "%s@%s" "$LATEST" "$(zfs list -Ho receive_resume_token "$TARGET/$POOL@$LATEST")"
-      fi
+      zfs list -t snap -Ho name,receive_resume_token -S creation "$TARGET/$DATASET"
       ;;
     'recv')
       echo "creating $TARGET"
@@ -114,9 +130,6 @@ recv() {
         -o canmount=noauto \
         "$TARGET"
       ;;
-    'connect')
-      # do nothing
-      ;;
     *)
       printf "fatal error: unknown command \`%s\`\n" "$SSH_ORIGINAL_COMMAND"
       exit 1
@@ -124,7 +137,35 @@ recv() {
   esac
 }
 
-case "${1-'sync'}" in
+syncOLD() {
+  HOST="$1"
+  ROOT="$2"
+  connect "$HOST"
+
+  for SOURCE in $(iterate "$ROOT"); do
+    log "syncing dataset: %s" "$SOURCE"
+    TARGET="${SOURCE#*/}" # remove the pool name prefix
+    # shellcheck disable=2029 # expand TARGET on client side
+    LATEST="$(zfs list -t snap -Ho name "$SOURCE" | cut -f 2 -d '@' | ssh "$HOST" list "$TARGET")"
+    if [ -n "$LATEST" ]; then
+      RESUMETOKEN="${LATEST##*@}"
+      SNAPSHOT="${LATEST%%@*}"
+      log "executing incremental from %s with resume token %s" "$SNAPSHOT" "$RESUMETOKEN"
+      if [ "$RESUMETOKEN" != "-" ]; then
+        # shellcheck disable=2029 # expand TARGET on client side
+        zfs send -t "$RESUMETOKEN" | mbuffer | ssh "$HOST" 'recv' "$TARGET"
+      fi
+      # shellcheck disable=2029 # expand TARGET on client side
+      zfs send -w -I "@$SNAPSHOT" "$SOURCE@$(zfs list -t snap -o name "$TARGET" | tail -n 1)" \
+        | mbuffer \
+        | ssh "$HOST" 'recv' "$TARGET"
+    else
+      echo "executing initial transfer"
+    fi
+  done
+}
+
+case "${1:-""}" in
   'snap')
     shift
     snap "${1:-"zpool"}"
@@ -148,6 +189,7 @@ case "${1-'sync'}" in
       | xargs -0 zfs holds
     ;;
   *)
-    printf "\nusage: %s ( init_test [clean] | sync )\n\n" "$(basename "$0")"
+    error "\nfatal error: unknown command%s" "${1:+": \`$1\`"}"
+    error "usage: %s snap | sync | recv | holds" "$(basename "$0")"
     ;;
 esac

@@ -102,6 +102,7 @@ create_zpool "${TARGET}" "${TARGETFILE}"
 for filesystem in "no${DATASET}" "${DATASET}" "${DATASET}/first" "${DATASET}/second" "${DATASET}/second/deeper"; do
   echo "creating '${SOURCE}/${filesystem}"
   create_dataset "${SOURCE}/${filesystem}"
+  dd if=/dev/random of="/${SOURCE}/${filesystem}/rndm" bs=25M count=1
 done
 zfs set com.sun:auto-snapshot=false "${SOURCE}/no${DATASET}"
 zfs set com.sun:auto-snapshot=false "${TARGET}"

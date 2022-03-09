@@ -25,11 +25,10 @@ DATASET="${DATASET="sync"}"
 WORKDIR="${WORKDIR:="$(realpath "$(pwd)")/workdir"}"
 mkdir -p "${WORKDIR}"
 
-TIMESTAMP="$(date -u +%F_%H-%M-%S_Z)"
-
 # create backing files and zpool for testing
 SOURCEFILE="${WORKDIR}/${SOURCE}.zfs"
 TARGETFILE="${WORKDIR}/${TARGET}.zfs"
+PASSWORDFILE="${WORKDIR}/password"
 
 # delete old stuff if "clean" arg provided
 if [ "${1-""}" = 'clean' ]; then
@@ -73,8 +72,13 @@ create_zpool() {
   if zpool list "$1" > /dev/null 2>&1; then
     printf "zpool: '%s' already exists\n" "$1"
   else
+    if [ ! -f "${PASSWORDFILE}" ]; then
+      printf 'enter new password: '
+      read -r PASSWORD
+      echo "${PASSWORD}" > "${PASSWORDFILE}"
+    fi
     printf "creating zpool: '%s' ..." "$1"
-    zpool create -O compression=on -O encryption=on -O keyformat=passphrase -O keylocation=prompt "$1" "$2"
+    zpool create -O compression=on -O encryption=on -O keyformat=passphrase -O keylocation="file://${PASSWORDFILE}" "$1" "$2"
     printf " finished\n"
   fi
 }

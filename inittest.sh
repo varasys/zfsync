@@ -63,7 +63,7 @@ create_backing_file() {
     printf "backing file: '%s' already exists\n" "$1"
   else
     printf "creating backing file: '%s' ..." "$1"
-    truncate -s 512M "$1"
+    truncate -s 1G "$1"
     printf " finished\n"
   fi
 }
@@ -78,7 +78,8 @@ create_zpool() {
       echo "${PASSWORD}" > "${PASSWORDFILE}"
     fi
     printf "creating zpool: '%s' ..." "$1"
-    zpool create -O compression=on -O encryption=on -O keyformat=passphrase -O keylocation="file://${PASSWORDFILE}" "$1" "$2"
+    #shellcheck disable=2086 # don't quote $3 below (to ensure splitting)
+    zpool create -O compression=on -O encryption=on -O keyformat=passphrase -O keylocation="file://${PASSWORDFILE}" ${3:-} "$1" "$2"
     printf " finished\n"
   fi
 }
@@ -98,12 +99,14 @@ printf "\ncreating testing backing files and zpools ...\n"
 create_backing_file "${SOURCEFILE}"
 create_backing_file "${TARGETFILE}"
 create_zpool "${SOURCE}" "${SOURCEFILE}"
-create_zpool "${TARGET}" "${TARGETFILE}"
+create_zpool "${TARGET}" "${TARGETFILE}" "-O canmount=noauto -O mountpoint=none"
 for filesystem in "no${DATASET}" "${DATASET}" "${DATASET}/first" "${DATASET}/second" "${DATASET}/second/deeper"; do
   echo "creating '${SOURCE}/${filesystem}"
   create_dataset "${SOURCE}/${filesystem}"
-  dd if=/dev/random of="/${SOURCE}/${filesystem}/rndm" bs=25M count=1
+  dd if=/dev/urandom of="/${SOURCE}/${filesystem}/rndm" bs=25M count=1
 done
+# create a really big file somewhere to make transfer long enough to witness
+dd if=/dev/urandom of="/${SOURCE}/${DATASET}/first/bigfile" bs=10M count=50
 zfs set com.sun:auto-snapshot=false "${SOURCE}/no${DATASET}"
 zfs set com.sun:auto-snapshot=false "${TARGET}"
 printf "finished creating testing backing files and zpools\n"

@@ -1,26 +1,27 @@
 #!/bin/sh
 # ©, 2020, Casey Witt
-# developed for zfs-0.8.3
+# developed with zfs-0.8.3
 # hosted at https://github.com/varasys/zfsync
 # based on posix scripting tutorials at:
 #   https://www.grymoire.com/Unix/Sh.html
 #   https://steinbaugh.com/posts/posix.html
 #   https://github.com/dylanaraps/pure-sh-bible
 
-# TODO accomidate adding new datesets to the source (currently need to manually sync first)
-# TODO accomidate pruning old snapshots that don't have holds (currently does not do this at all)
-# TODO handle failure and resume gracefully
-# TODO add function to delete old snapshots
-
 # note that ~/.ssh/authorized_keys file on the backup server must have an entry of the following form:
 # command="zfsync.sh recv pool/path" <type> <key> [comment]
 # synced datasets will be at pool/path
 
-set -eu # fast fail on errors and undefined variables
-# set -x
+# TODO canfig zfsync user (as sender and receiver)
+# TODO implement restore (ie. receiving from backupserver instead of sending to)
+# TODO implement pruning
+# TODO update sync logic to check for new latest snapshot after each send
+# TODO implement creating dummy datasets on backup server for broken chains
+# TODO implement ssh key/authorized_keys management
 
-# prefix for snapshots
-SNAPPREFIX="${SNAPPREFIX:-"zfsync_"}"
+set -eu # fast fail on errors and undefined variables
+
+SNAPPREFIX="${SNAPPREFIX:-"zfsync_"}" # prefix for snapshot name
+DATECMD="${DATECMD:-"date -u +%F_%H-%M-%S_UTC"}" # command to generate snapshot name timestamp
 
 log() (
   MSG="$1"; shift
@@ -61,9 +62,7 @@ iterate() ( # call this to return ordered list of datasets to operate on
 
 snap() (
   ROOT="$1"
-  # shellcheck disable=2086 # no quotes needed around date args in the following line
-  TIMESTAMP="$(date ${DATEARGS:--u +%F_%H-%M-%S_Z})"
-  SNAPSHOT="${SNAPPREFIX}${TIMESTAMP}"
+  SNAPSHOT="${SNAPPREFIX}$(${DATECMD})"
   SNAPSHOTS=$(iterate "${ROOT}" "@${SNAPSHOT}")
   if [ -n "${SNAPSHOTS}" ]; then
     log 'creating snapshots:' >&2
@@ -82,7 +81,7 @@ connect() {
   log 'connecting to ssh host: %s ...' "${HOST}"
   ssh -fMN -S "${SOCKET}" "${HOST}"
   # shellcheck disable=2064 # expand HOST and SOCKET at definition time
-  trap "disconnect '${HOST}' '${SOCKET}'" EXIT
+  trap "disconnect '${HOST}' '${SOCKET}'" EXIT INT
   RPC=$(printf '%s -o ControlMaster=no -S %s %s' "$(command -v ssh)" "${SOCKET}" "${HOST}")
   export RPC # need to export so function subshells have access
 }
@@ -101,7 +100,7 @@ create_remote() (
     error 'no snapshots available to sync dataset: %s' "$SOURCE"
   else
     log 'sending %s' "${SOURCE}"
-    STATUS="$(zfs send -DLecwhp "${FIRST}" | mbuffer | $RPC sync "${SOURCE}")"
+    STATUS="$(zfs send -DLecwhp "${FIRST}" | mbuffer | $RPC recv "${SOURCE}")"
     printf '%s' "${STATUS}"
   fi
 )
@@ -110,7 +109,7 @@ resume_remote() (
   SOURCE="$1"
   TOKEN="$2"
   log 'resuming send for %s' "${SOURCE}"
-  STATUS="$(zfs send -e -t "${TOKEN}" | mbuffer | $RPC sync "${SOURCE}")"
+  STATUS="$(zfs send -e -t "${TOKEN}" | mbuffer | $RPC recv "${SOURCE}")"
   printf '%s' "${STATUS}"
 )
 
@@ -127,7 +126,7 @@ update_remote() {
   debug 'second FINISHSNAP: %s' "$FINISHSNAP"
 
   log 'sending incremental %s' "${FINISHSNAP}"
-  STATUS="$(zfs send -DLecwhp -I "${STARTSNAP}" "${FINISHSNAP}" | mbuffer | $RPC sync "${SOURCE}")"
+  STATUS="$(zfs send -DLecwhp -I "${STARTSNAP}" "${FINISHSNAP}" | mbuffer | $RPC recv "${SOURCE}")"
   printf '%s' "${STATUS}"
 }
 
@@ -164,6 +163,20 @@ sync() ( # this is run on the machine to be backed up
   done
 )
 
+list() {
+  HOST="$1"
+  shift
+  connect "$HOST" # this will define RPC variable
+  $RPC list "$@"
+}
+
+send() {
+  HOST="$1"
+  shift
+  connect "$HOST" # this will define RPC variable
+  $RPC send "$@"
+}
+
 recv() ( # run from authorized_keys file on the backup server (ie. command="zfsync.sh recv zpool/backups")
   TARGET="$1" # the dataset path prefix including pool name (ie. zpool/backups)
   if ! zfs list "${TARGET}" >/dev/null 2>&1; then
@@ -172,23 +185,40 @@ recv() ( # run from authorized_keys file on the backup server (ie. command="zfsy
   fi
   # shellcheck disable=2086 # use word splitting below
   set -- $SSH_ORIGINAL_COMMAND
-  CMD="$1"
-  SOURCE="$2"
-  case "${CMD}" in
+  SUBCMD="$1"
+  shift
+  case "${SUBCMD}" in
     'status')
+      SOURCE="$1"
       if RESUME="$(zfs list -Ho receive_resume_token "${TARGET}/${SOURCE}" 2>/dev/null)" && [ "${RESUME}" != '-' ]; then
         printf 'receive_resume_token=%s' "${RESUME}"
       elif GUID="$(zfs list -t snapshot -Ho guid -S creation "${TARGET}/${SOURCE}" 2>/dev/null | head -n 1)" && [ -n "${GUID}" ]; then
         printf 'guid=%s' "${GUID}"
       fi
       ;;
-    'sync')
-      #mbuffer | zfs receive -sv \
+    'recv')
+      SOURCE="$1"
       mbuffer | zfs receive -s \
         -o canmount=noauto \
         -o com.sun:auto-snapshot=false \
         "${TARGET}/${SOURCE}" >&2
       SSH_ORIGINAL_COMMAND="status ${SOURCE}" recv "${TARGET}"
+      ;;
+    'send')
+      ARGS="$*"
+      OPTIONS="${ARGS% *}"
+      DATASET="${ARGS##* }"
+      [ "${OPTIONS}" != "${DATASET}" ] || OPTIONS=""
+      # shellcheck disable=2086 # don't quote OPTIONS
+      zfs send ${OPTIONS} "${TARGET}/${DATASET}"
+      ;;
+    'list')
+      ARGS="$*"
+      OPTIONS="${ARGS% *}"
+      DATASET="${ARGS##* }"
+      [ "${OPTIONS}" != "${DATASET}" ] || OPTIONS=""
+      # shellcheck disable=2086 # don't quote OPTIONS
+      zfs list ${OPTIONS} "${TARGET}/${DATASET}"
       ;;
     *)
       #shellcheck disable=2016 # don't expand %s below
@@ -198,31 +228,42 @@ recv() ( # run from authorized_keys file on the backup server (ie. command="zfsy
   esac
 )
 
-case "${1:-""}" in
+configkey() {
+  if [ -z "${DATASETROOT:-}" ]; then
+    printf 'enter backup server dataset root (ie. zpool/backups): '
+    read -r DATASETROOT
+    [ -n "${DATASETROOT}" ] || DATASETROOT="zpool/backups"
+  fi
+  KEYFILE="${KEYFILE:-"${HOME}/.ssh/zfsync"}"
+  if [ -f "${KEYFILE}" ]; then
+    warn 'using existing keyfile at %s' "${KEYFILE}"
+  else
+    log 'generating new ssh key at %s ...' "${KEYFILE}"
+    ssh-keygen -C "zfsync@$(hostname -f)" -f "${KEYFILE}" -N "" -t ed25519
+  fi
+  # shellcheck disable=2016 # don't expand $HOME below
+  log 'add the following to the "$HOME/.ssh/authorized_keys" file on the backup server'
+  log 'and ensure %s is in the path, or update the line below with absolute path to the script' "$(basename "$0")"
+  printf '%s %s\n' "command=\"$(basename "$0") recv ${DATASETROOT}\"" "$(cat "${KEYFILE}.pub")"
+}
+
+CMD="${1:-}"
+shift
+case "${CMD}" in
   'snap')
-    shift
-    snap "${1:-"zpool"}"
-    ;;
+    snap "${1:-"zpool"}";;
   'sync')
-    shift
-    sync "${1:-"localhost"}" "${2:-"zpool"}"
-    ;;
-  'recv')
-    # run this in ssh command options in authorized keys file with pool/root argument
-    shift
-    recv "${1:-"backup"}"
-    ;;
-  'holds') # from: https://serverfault.com/questions/456301/how-to-check-that-all-zfs-snapshots-within-a-pool-are-without-holds-before-destr#877160
-    # this is for information only
-    # shellcheck disable=2039 # ignore posix warning below and eventually work out a better way to do this
-    zfs get -Ht snapshot userrefs \
-      | grep -v $'\t'0 \
-      | cut -d $'\t' -f 1 \
-      | tr '\n' '\0' \
-      | xargs -0 zfs holds
-    ;;
+    sync "${1:-"localhost"}" "${2:-"zpool"}";;
+  'recv') # run this from ssh authorized keys file (ie. command="zfsync.sh recv zpool/backups" ...)
+    recv "${1:-"zpool/backups"}";;
+  'list')
+    list "$@";; # host [options] dataset
+  'send')
+    send "$@";; # host [options] dataset
+  'configkey')
+    configkey;;
   *)
     error "\nfatal error: unknown command%s" "${1:+": \`$1\`"}"
-    error "usage: %s snap | sync | recv | holds" "$(basename "$0")"
+    error "usage: %s snap | sync | recv | configkey" "$(basename "$0")"
     ;;
 esac

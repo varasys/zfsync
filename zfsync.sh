@@ -12,11 +12,9 @@
 # synced datasets will be at pool/path
 
 # TODO canfig zfsync user (as sender and receiver)
-# TODO implement restore (ie. receiving from backupserver instead of sending to)
 # TODO implement pruning
 # TODO update sync logic to check for new latest snapshot after each send
 # TODO implement creating dummy datasets on backup server for broken chains
-# TODO implement ssh key/authorized_keys management
 
 set -eu # fast fail on errors and undefined variables
 

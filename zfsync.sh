@@ -46,8 +46,6 @@ error() (
   printf "\e[1m\e[31m$MSG\e[0m\n" "$@" >&2
 )
 
-
-
 if [ "$(id -u)" -ne 0 ]; then
   warn "restarting as root ..."
   exec sudo -E "$0" "$@"
@@ -125,9 +123,8 @@ update_remote() {
   debug 'first STARTSNAP: %s' "$STARTSNAP"
   [ -z "${STARTSNAP}" ] && STARTSNAP="$(zfs list -Ho name,guid -t bookmark -s creation "${SOURCE}" \
     | awk "\$2 == ${REMOTEGUID} { print \$1 }")"
-  debug 'second STARTSNAP: %s' "$STARTSNAP"
   FINISHSNAP="$(zfs list -t snap -Ho name -S creation "${SOURCE}" | head -n 1)"
-  error "------------ $STARTSNAP to $FINISHSNAP"
+  debug 'second FINISHSNAP: %s' "$FINISHSNAP"
 
   log 'sending incremental %s' "${FINISHSNAP}"
   STATUS="$(zfs send -DLecwhp -I "${STARTSNAP}" "${FINISHSNAP}" | mbuffer | $RPC sync "${SOURCE}")"
@@ -171,7 +168,7 @@ recv() ( # run from authorized_keys file on the backup server (ie. command="zfsy
   TARGET="$1" # the dataset path prefix including pool name (ie. zpool/backups)
   if ! zfs list "${TARGET}" >/dev/null 2>&1; then
     warn 'creating backup root dataset: %s' "${TARGET}"
-    zfs create -o canmount=noauto -o com.sun:auto-snapshot=false "$TARGET"
+    zfs create -o encryption=off -o canmount=noauto -o com.sun:auto-snapshot=false "$TARGET"
   fi
   # shellcheck disable=2086 # use word splitting below
   set -- $SSH_ORIGINAL_COMMAND

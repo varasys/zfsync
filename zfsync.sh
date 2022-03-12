@@ -11,7 +11,7 @@
 # command="zfsync.sh recv pool/path" <type> <key> [comment]
 # synced datasets will be at pool/path
 
-# TODO canfig zfsync user (as sender and receiver)
+# TODO config zfsync user (as sender and receiver)
 # TODO implement pruning
 # TODO update sync logic to check for new latest snapshot after each send
 # TODO implement creating dummy datasets on backup server for broken chains
@@ -54,7 +54,7 @@ iterate() ( # call this to return ordered list of datasets to operate on
 )
 
 snap() (
-  ROOT="$1"
+  ROOT="${1:-"zpool"}"
   SNAPSHOT="${SNAPPREFIX}$(${DATECMD})"
   SNAPSHOTS=$(iterate "${ROOT}" "@${SNAPSHOT}")
   if [ -n "${SNAPSHOTS}" ]; then
@@ -124,8 +124,8 @@ update_remote() (
 )
 
 sync() ( # this is run on the machine to be backed up
-  HOST="$1"
-  ROOT="$2"
+  HOST="${1:-"localhost"}"
+  ROOT="${2:-"zpool"}"
   connect "$HOST" # this will define RPC variable
   log 'syncing to host: %s' "${HOST}"
 
@@ -170,8 +170,8 @@ send() (
   $RPC send "$@"
 )
 
-recv() ( # run from authorized_keys file on the backup server (ie. command="zfsync.sh recv zpool/backups")
-  TARGET="$1" # the dataset path prefix including pool name (ie. zpool/backups)
+server() ( # run from authorized_keys file on the backup server (ie. command="zfsync.sh recv zpool/backups")
+  TARGET="${1:-"zpool/backups"}" # the dataset path prefix including pool name (ie. zpool/backups)
   if ! zfs list "${TARGET}" >/dev/null 2>&1; then
     warn 'creating backup root dataset: %s' "${TARGET}"
     zfs create -o encryption=off -o canmount=noauto -o com.sun:auto-snapshot=false "$TARGET"
@@ -221,25 +221,6 @@ recv() ( # run from authorized_keys file on the backup server (ie. command="zfsy
   esac
 )
 
-configkey() (
-  if [ -z "${DATASETROOT:-}" ]; then
-    printf 'enter backup server dataset root (ie. zpool/backups): '
-    read -r DATASETROOT
-    [ -n "${DATASETROOT}" ] || DATASETROOT="zpool/backups"
-  fi
-  KEYFILE="${KEYFILE:-"${HOME}/.ssh/zfsync"}"
-  if [ -f "${KEYFILE}" ]; then
-    warn 'using existing keyfile at %s' "${KEYFILE}"
-  else
-    log 'generating new ssh key at %s ...' "${KEYFILE}"
-    ssh-keygen -C "zfsync@$(hostname -f)" -f "${KEYFILE}" -N "" -t ed25519
-  fi
-  # shellcheck disable=2016 # don't expand $HOME below
-  log 'add the following to the "$HOME/.ssh/authorized_keys" file on the backup server'
-  log 'and ensure %s is in the path, or update the line below with absolute path to the script' "$(basename "$0")"
-  printf '%s %s\n' "command=\"$(basename "$0") recv ${DATASETROOT}\"" "$(cat "${KEYFILE}.pub")"
-)
-
 configuser() (
   USER="${1:-"zfsync"}"
   HOMEDIR="${2:-"${HOMEDIR:-"/etc/zfsync"}"}"
@@ -273,43 +254,75 @@ restart_as_root() {
   fi
 }
 
+allowsend() (
+  DATASET="$1"
+  USER="${2:-"zfsync"}"
+  log "granting send permission to '%s' on dataset '%s'" "${USER}" "${DATASET}"
+  zfs allow -dlg "${USER}" send "${DATASET}"
+  zfs allow "${DATASET}"
+)
+
+allowreceive() (
+  DATASET="$1"
+  USER="${2:-"zfsync"}"
+  log "granting receive,mount,create permission to '%s' on dataset '%s'" "${USER}" "${DATASET}"
+  zfs allow -dlg "${2:-"zfsync"}" receive,mount,create "${DATASET}"
+  zfs allow "${DATASET}"
+)
+
+showkey() (
+  USER="${1:-"zfsync"}"
+  if [ -z "${DATASET:-}" ]; then
+    printf 'enter backup server dataset root (ie. zpool/backups): '
+    read -r DATASET
+    [ -n "${DATASET}" ] || DATASET="zpool/backups"
+  fi
+)
+
 CMD="${1:-}"
-shift
+[ $? -gt 0 ] && shift
 case "${CMD}" in
   'snap')
-    snap "${1:-"zpool"}";;
+    # help: \nsnap: recursively create new snapshots
+    # help:   zfsync.sh snap <dataset>
+    snap "$@";;
   'sync')
-    sync "${1:-"localhost"}" "${2:-"zpool"}";;
-  'recv') # run this from ssh authorized keys file (ie. command="zfsync.sh recv zpool/backups" ...)
-    recv "${1:-"zpool/backups"}";;
+    # help: \nsync: recursively backup snapshots to remote server
+    # help:   zfsync.sh sync <host> <dataset>
+    sync "$@";;
+  'server')
+    # help: \nserver: run in server mode on the backup host (from .ssh/authorized_keys file)
+    # help:   zfsync.sh server <dataset>
+    server "$@";;
   'list')
+    # help: \nlist: run `zfs list` remotely on backup server (ie. query the backup server from the client)
+    # help:   zfsync.sh list <host> [options] <dataset>
     list "$@";; # host [options] dataset
   'send')
+    # help: \nsend: run `zfs send` remotely on backup server (ie. to restore a snaphshot from the backup server)
+    # help:   zfsync.sh send <host> [options] <dataset>
     send "$@";; # host [options] dataset
-  'configkey')
-    configkey "$@";;
   'configuser')
+    # help: \nconfiguser: create zfsync user, /etc/zfsync directory, and /etc/zfsync/.ssh/id_ed25519 ssh key
+    # help:   zfsync configuser [username]
     restart_as_root configuser "$@"
-    configuser "$@"
-    ;;
+    configuser "$@";;
   'allowsend')
+    # help: \nallowsend: add zfs "send" permission for zfsync user to dataset (on client machine)
+    # help:   zfsync allowsend <dataset> [username]
     restart_as_root allowsend "$@"
-    USER="${2:-"zfsync"}"
-    DATASET="$1"
-    log "granting send permission to '%s' on dataset '%s'" "${USER}" "${DATASET}"
-    zfs allow -dlg "${USER}" send "${DATASET}"
-    zfs allow "$1"
-    ;;
+    allowsend "$@";;
   'allowreceive')
+    # help: \nallowreceive: add zfs "receive,mount,create" permission for zfsync user to dataset (on backup server)
+    # help:   zfsync allowreceive <dataset> [username]
     restart_as_root allowreceive "$@"
-    USER="${2:-"zfsync"}"
-    DATASET="$1"
-    log "granting receive,mount,create permission to '%s' on dataset '%s'" "${USER}" "${DATASET}"
-    zfs allow -dlg "${2:-"zfsync"}" receive,mount,create "$1"
-    zfs allow "$1"
-    ;;
+    allowreceive "$@";;
+  'showkey')
+    # help: \nshow line to add to backup server authorized_keys file (run on client)
+    # help:   zfsync.sh showkey <dataset> [user]
+    showkey "$@";;
   *)
-    error "\nfatal error: unknown command%s" "${1:+": \`$1\`"}"
-    error "usage: %s snap | sync | recv | configkey" "$(basename "$0")"
+    error "\nfatal error: unknown command%s" "${CMD:+": \`${CMD}\`"}"
+    grep '# help: ' "$0" | grep -v 'grep' | sed 's/ *# help: //g' | sed 's/\\n/\n/g'
     ;;
 esac

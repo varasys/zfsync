@@ -8,7 +8,7 @@
 #   https://github.com/dylanaraps/pure-sh-bible
 
 # note that ~/.ssh/authorized_keys file on the backup server must have an entry of the following form:
-# command="zfsync.sh recv pool/path" <type> <key> [comment]
+# command="zfsync.sh server pool/path" <type> <key> [comment]
 # synced datasets will be at pool/path
 
 # TODO config zfsync user (as sender and receiver)
@@ -271,16 +271,22 @@ allowreceive() (
 )
 
 showkey() (
-  USER="${1:-"zfsync"}"
-  if [ -z "${DATASET:-}" ]; then
-    printf 'enter backup server dataset root (ie. zpool/backups): '
-    read -r DATASET
-    [ -n "${DATASET}" ] || DATASET="zpool/backups"
+  DATASET="${1:-"<dataset>"}"
+  USER="${2:-"zfsync"}"
+  if [ "$(id -un)" = "${USER}" ]; then
+    KEY="$(cat "${HOME}/.ssh/id_ed25519.pub")"
+  else
+    KEY="$(sudo su -l -c "eval cat '\${HOME}/.ssh/id_ed25519.pub'" "${USER}")"
   fi
+  log 'showing key for user: %s' "${USER}"
+  # shellcheck disable=2016 # do not expand $HOME in the following line
+  log 'copy the following line into the "$HOME/.ssh/authorized_keys" file on the backup server'
+  [ "${DATASET}" = "<dataset>" ] && log 'change <dataset> to the root dataset for the backups on the backup server'
+  printf '\ncommand="%s server %s" %s\n\n' "$(basename "$0")" "${DATASET}" "${KEY}"
 )
 
 CMD="${1:-}"
-[ $? -gt 0 ] && shift
+[ $# -gt 0 ] && shift
 case "${CMD}" in
   'snap')
     # help: \nsnap: recursively create new snapshots
@@ -297,11 +303,11 @@ case "${CMD}" in
   'list')
     # help: \nlist: run `zfs list` remotely on backup server (ie. query the backup server from the client)
     # help:   zfsync.sh list <host> [options] <dataset>
-    list "$@";; # host [options] dataset
+    list "$@";;
   'send')
     # help: \nsend: run `zfs send` remotely on backup server (ie. to restore a snaphshot from the backup server)
     # help:   zfsync.sh send <host> [options] <dataset>
-    send "$@";; # host [options] dataset
+    send "$@";;
   'configuser')
     # help: \nconfiguser: create zfsync user, /etc/zfsync directory, and /etc/zfsync/.ssh/id_ed25519 ssh key
     # help:   zfsync configuser [username]

@@ -45,11 +45,6 @@ error() (
   printf "\e[1m\e[31m$MSG\e[0m\n" "$@" >&2
 )
 
-if [ "$(id -u)" -ne 0 ]; then
-  warn "restarting as root ..."
-  exec sudo -E "$0" "$@"
-fi
-
 iterate() ( # call this to return ordered list of datasets to operate on
   # use this to return same list for both snap and sync
   ROOT="$1"
@@ -73,7 +68,7 @@ snap() (
   fi
 )
 
-connect() {
+connect() { # do not use subshell since RPC must be exported
   HOST="$1"
   SOCKET="${HOME}/.ssh/zfsync_${HOST}_$(date +%s%N)"
   log 'connecting to ssh host: %s ...' "${HOST}"
@@ -111,7 +106,7 @@ resume_remote() (
   printf '%s' "${STATUS}"
 )
 
-update_remote() {
+update_remote() (
   SOURCE="$1"
   REMOTEGUID="$2"
   debug 'remote guid: %s for %s' "$REMOTEGUID" "$SOURCE"
@@ -126,7 +121,7 @@ update_remote() {
   log 'sending incremental %s' "${FINISHSNAP}"
   STATUS="$(zfs send -DLecwhp -I "${STARTSNAP}" "${FINISHSNAP}" | mbuffer | $RPC recv "${SOURCE}")"
   printf '%s' "${STATUS}"
-}
+)
 
 sync() ( # this is run on the machine to be backed up
   HOST="$1"
@@ -161,19 +156,19 @@ sync() ( # this is run on the machine to be backed up
   done
 )
 
-list() {
+list() (
   HOST="$1"
   shift
   connect "$HOST" # this will define RPC variable
   $RPC list "$@"
-}
+)
 
-send() {
+send() (
   HOST="$1"
   shift
   connect "$HOST" # this will define RPC variable
   $RPC send "$@"
-}
+)
 
 recv() ( # run from authorized_keys file on the backup server (ie. command="zfsync.sh recv zpool/backups")
   TARGET="$1" # the dataset path prefix including pool name (ie. zpool/backups)
@@ -226,7 +221,7 @@ recv() ( # run from authorized_keys file on the backup server (ie. command="zfsy
   esac
 )
 
-configkey() {
+configkey() (
   if [ -z "${DATASETROOT:-}" ]; then
     printf 'enter backup server dataset root (ie. zpool/backups): '
     read -r DATASETROOT
@@ -243,6 +238,39 @@ configkey() {
   log 'add the following to the "$HOME/.ssh/authorized_keys" file on the backup server'
   log 'and ensure %s is in the path, or update the line below with absolute path to the script' "$(basename "$0")"
   printf '%s %s\n' "command=\"$(basename "$0") recv ${DATASETROOT}\"" "$(cat "${KEYFILE}.pub")"
+)
+
+configuser() (
+  USER="${1:-"zfsync"}"
+  HOMEDIR="${2:-"${HOMEDIR:-"/etc/zfsync"}"}"
+  if id "${USER}" >/dev/null 2>&1; then
+    warn 'user %s already exists' "${USER}"
+  else
+    useradd --home-dir "${HOMEDIR}" --no-create-home \
+      --shell "$(command -v bash || command -v sh)" --system "${USER}"
+    log 'user %s created' "${USER}"
+  fi
+  if [ -d "${HOMEDIR}" ]; then
+    warn 'home directory %s already exists' "${HOMEDIR}"
+  else
+    mkdir -p "${HOMEDIR}"
+    chown "${USER}:${USER}" "${HOMEDIR}"
+    log 'home directory %s created' "${HOMEDIR}"
+  fi
+  if [ -f "${HOMEDIR}/.ssh/id_ed25519" ]; then
+    warn 'ssh key %s already exists' "${HOMEDIR}/.ssh/id_ed25519"
+  else
+    su -c "ssh-keygen -f '${HOMEDIR}/.ssh/id_ed25519' -t ed25519 -N ''" - "${USER}"
+    ln -s .ssh "${HOMEDIR}/ssh"
+    log 'ssh key %s created' "${HOMEDIR}/.ssh/id_ed25519"
+  fi
+)
+
+restart_as_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    warn "restarting as root ..."
+    exec sudo -E "$0" "$@"
+  fi
 }
 
 CMD="${1:-}"
@@ -259,7 +287,27 @@ case "${CMD}" in
   'send')
     send "$@";; # host [options] dataset
   'configkey')
-    configkey;;
+    configkey "$@";;
+  'configuser')
+    restart_as_root configuser "$@"
+    configuser "$@"
+    ;;
+  'allowsend')
+    restart_as_root allowsend "$@"
+    USER="${2:-"zfsync"}"
+    DATASET="$1"
+    log "granting send permission to '%s' on dataset '%s'" "${USER}" "${DATASET}"
+    zfs allow -dlg "${USER}" send "${DATASET}"
+    zfs allow "$1"
+    ;;
+  'allowreceive')
+    restart_as_root allowreceive "$@"
+    USER="${2:-"zfsync"}"
+    DATASET="$1"
+    log "granting receive,mount,create permission to '%s' on dataset '%s'" "${USER}" "${DATASET}"
+    zfs allow -dlg "${2:-"zfsync"}" receive,mount,create "$1"
+    zfs allow "$1"
+    ;;
   *)
     error "\nfatal error: unknown command%s" "${1:+": \`$1\`"}"
     error "usage: %s snap | sync | recv | configkey" "$(basename "$0")"

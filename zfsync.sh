@@ -1,11 +1,7 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # ©, 2022, Casey Witt
 # developed with zfs-0.8.3
 # hosted at https://github.com/varasys/zfsync
-# posix sh code based on posix scripting tutorials at:
-#   https://www.grymoire.com/Unix/Sh.html
-#   https://steinbaugh.com/posts/posix.html
-#   https://github.com/dylanaraps/pure-sh-bible
 # script linted with shellcheck (https://www.shellcheck.net/)
 
 # note that ~/.ssh/authorized_keys file on the backup server must have an entry of the following form:
@@ -16,11 +12,14 @@
 # [ ] TODO implement creating dummy datasets on backup server for broken chains
 # [*] TODO config zfsync user (as sender and receiver)
 
-set -eu # fast fail on errors and undefined variables
+set -euo pipefail # fast fail on errors, undefined variables, and pipeline errors
 
 AUTOSNAPPROP="${AUTOSNAPPROP:-"com.sun:auto-snapshot"}" # dataset user property (set false to exclude dataset from snapshoting and backups)
 SNAPPREFIX="${SNAPPREFIX:-"zfsync_"}" # prefix for snapshot name
 DATECMD="${DATECMD:-"date -u +%F_%H-%M-%S_UTC"}" # command to generate snapshot name timestamp
+
+ERR=0 # error counter (incremented when error function is called
+trap 'exit $ERR' EXIT
 
 log() {
   MSG="$1"; shift
@@ -44,6 +43,14 @@ error() {
   MSG="$1"; shift
   # shellcheck disable=2059 # allow variable in printf format string
   printf "\e[1m\e[31m${MSG}\e[0m\n" "$@" >&2
+  ERR=$((ERR+1))
+}
+
+fatal() {
+  MSG="$1"; shift
+  # shellcheck disable=2059 # allow variable in printf format string
+  printf "\e[1m\e[31m${MSG}\e[0m\n" "$@" >&2
+  exit 1
 }
 
 iterate() { # call this to return ordered list of datasets to operate on for snap and mirror
@@ -54,23 +61,33 @@ iterate() { # call this to return ordered list of datasets to operate on for sna
 }
 
 snap() {
+  SNAPSHOT="${SNAPPREFIX}$(${DATECMD})"
   # shellcheck disable=2015,2091 # accept logic and execute subcommand
   for ROOT in $([ $# -gt 0 ] && echo "$@" || zpool list -Ho name); do
-    SNAPSHOT="${SNAPPREFIX}$(${DATECMD})"
-    SNAPSHOTS=$(iterate "${ROOT}" "@${SNAPSHOT}")
-    if [ -n "${SNAPSHOTS}" ]; then
-      log 'creating snapshots:'
-      #shellcheck disable=2086 # do not quote variables
-      [ -n "${PRESNAPCMD:-}" ] && ${PRESNAPCMD} "${ROOT}" ${SNAPSHOTS} # run pre-snapshot hook if it is defined
-      #shellcheck disable=2086 # do not quote $SNAPSHOTS
-      zfs snap ${SNAPSHOTS}
-      for SNAP in ${SNAPSHOTS}; do # create bookmark of each snapshot
-        printf '%s\n' "${SNAP}"
-        zfs bookmark "${SNAP}" "${SNAP%@*}#${SNAPSHOT}"
-      done
-      #shellcheck disable=2086 # do not quote variables
-      [ -n "${POSTSNAPCMD:-}" ] && ${POSTSNAPCMD} "${ROOT}" ${SNAPSHOTS} # run post-snapshot hook if it is defined
-    fi
+    (
+      log 'creating snapshots for %s:' "${ROOT}"
+      SNAPSHOTS="$(iterate "${ROOT}" "@${SNAPSHOT}")" || fatal 'error iterating %s' "${ROOT}"
+      if [ -n "${SNAPSHOTS}" ]; then
+        printf '%s\n' "${SNAPSHOTS}"
+        #shellcheck disable=2086 # do not quote variables
+        if [ -n "${PRESNAPHOOK:-}" ]; then # run pre-snapshot hook if it is defined
+          ${PRESNAPHOOK} ${SNAPSHOTS} \
+            || error 'error running PRESNAPHOOK: %s' "${PRESNAPHOOK}"
+        fi
+        #shellcheck disable=2086 # do not quote $SNAPSHOTS
+        zfs snap ${SNAPSHOTS} || fatal 'error creating snaphots for %s' "${ROOT}"
+        for SNAP in ${SNAPSHOTS}; do # create bookmark of each snapshot
+          zfs bookmark "${SNAP}" "${SNAP%@*}#${SNAPSHOT}" \
+            || error 'error creating bookmark %s' "${SNAP%@*}#${SNAPSHOT}"
+        done
+        #shellcheck disable=2086 # do not quote variables
+        if [ -n "${POSTSNAPHOOK:-}" ]; then # run post-snapshot hook if it is defined
+          ${POSTSNAPHOOK} ${SNAPSHOTS} \
+            || error 'error running POSTSNAPHOOK: %s' "${POSTSNAPHOOK}"
+        fi
+      fi
+      exit $ERR
+    ) || ERR=$((ERR+$?))
   done
 }
 
@@ -81,11 +98,10 @@ connect() {
   ssh -fMN -S "${SOCKET}" "${HOST}"
   # shellcheck disable=2064 # expand HOST and SOCKET at definition time
   trap "
-    ERR=\$?
     log 'disconnecting from ssh host: %s ...' '${HOST}'
     ssh -S '${SOCKET}' -O exit '${HOST}'
     exit \$ERR
-  " EXIT INT
+  " EXIT
   RPC=$(printf '%s -o ControlMaster=no -S %s %s' "$(command -v ssh)" "${SOCKET}" "${HOST}")
   export RPC # need to export so function subshells have access
 }
@@ -93,17 +109,13 @@ connect() {
 create_remote() {
   SOURCE="$1"
   FIRST=$(zfs list -t snap -Ho name -s creation "${SOURCE}" | head -n 1)
-  if [ -z "${FIRST}" ]; then
-    error 'no snapshots available to sync dataset: %s' "${SOURCE}"
-  else
-    zfs send -DLecwhp "${FIRST}" | mbuffer | $RPC recv "${SOURCE}"
-  fi
+  zfs send -DLecwh "${FIRST}" | mbuffer | $RPC receive -s "${SOURCE}"
 }
 
 resume_remote() {
   SOURCE="$1"
   TOKEN="$2"
-  zfs send -e -t "${TOKEN}" | mbuffer | $RPC recv "${SOURCE}"
+  zfs send -e -t "${TOKEN}" | mbuffer | $RPC recieve -s "${SOURCE}"
 }
 
 update_remote() {
@@ -114,8 +126,9 @@ update_remote() {
   # if STARTSNAP is not found then search bookmarks
   [ -n "${STARTSNAP}" ] || STARTSNAP="$(zfs list -Ho name,guid -t bookmark -s creation "${SOURCE}" \
     | awk "\$2 == ${REMOTEGUID} { print \$1 }")"
+  [ -n "${STARTSNAP}" ] || { error "can't find snapshot/bookmark for guid=%s" "${REMOTEGUID}"; exit 1; }
   FINISHSNAP="$(zfs list -t snap -Ho name -S creation "${SOURCE}" | head -n 1)"
-  zfs send -DLecwhp -I "${STARTSNAP}" "${FINISHSNAP}" | mbuffer | $RPC recv "${SOURCE}"
+  zfs send -DLecwhp -I "${STARTSNAP}" "${FINISHSNAP}" | mbuffer | $RPC recieve -s "${SOURCE}"
 }
 
 mirror() { # this is run on the machine to be backed up
@@ -124,33 +137,28 @@ mirror() { # this is run on the machine to be backed up
   for ROOT in $([ $# -gt 0 ] && echo "$@" || zpool list -Ho name); do
     for SOURCE in $(iterate "${ROOT}"); do
       (
-        GUID="$(zfs list -t snap -Ho guid -S creation "${SOURCE}" | head -n 1)"
-        if [ -n "${GUID}" ]; then
-          STATUS=$($RPC status "${SOURCE}")
-          if [ "${GUID}" = "${STATUS#guid=}" ]; then
-            log 'remote "%s" is already up to date' "${SOURCE}"
-          else
-            until [ "${GUID}" = "${STATUS#guid=}" ]; do
-              case "${STATUS}" in
-                receive_resume_token=*)
-                  log 'resuming: %s' "${SOURCE}"
-                  STATUS="$(resume_remote "${SOURCE}" "${STATUS#receive_resume_token=}")" || exit
-                  ;;
-                guid=*)
-                  log 'updating %s (%s => %s)' "${SOURCE}" "${STATUS}" "${GUID}"
-                  STATUS="$(update_remote "${SOURCE}" "${STATUS#guid=}")" || exit
-                  ;;
-                *)
-                  log 'creating: %s' "${SOURCE}"
-                  STATUS="$(create_remote "${SOURCE}")" || exit
-                  ;;
-              esac
-              GUID="$(zfs list -t snap -Ho guid -S creation "${SOURCE}" | head -n 1)"
-            done
-          fi
-        else
-          warn 'cannot mirror "%s" because it has no snapshots' "${SOURCE}"
-        fi
+        log 'mirroring %s ...' "${SOURCE}"
+        STATUS="$($RPC status "${SOURCE}")" || exit # error querying backup server
+        until
+          GUID="$(zfs list -t snap -Ho guid -S creation "${SOURCE}" | head -n 1)" || exit # invalid dataset error
+          [ -z "${GUID}" ] && { error "error mirroring %s - no existing snapshots" "${SOURCE}"; exit 1; }
+          [ "${GUID}" = "${STATUS#guid=}" ]
+        do
+          case "${STATUS}" in
+            receive_resume_token=*)
+              log '\nresuming: %s' "${SOURCE}"
+              STATUS="$(resume_remote "${SOURCE}" "${STATUS#receive_resume_token=}")" || exit
+              ;;
+            guid=*)
+              log '\nupdating %s (%s => %s)' "${SOURCE}" "${STATUS}" "${GUID}"
+              STATUS="$(update_remote "${SOURCE}" "${STATUS#guid=}")" || exit
+              ;;
+            *)
+              log '\ncreating: %s' "${SOURCE}"
+              STATUS="$(create_remote "${SOURCE}")" || exit
+              ;;
+          esac
+        done
       ) || {
         error 'error mirroring %s (%s)' "${SOURCE}" "$?"
         ERR=$((ERR+1))
@@ -160,31 +168,28 @@ mirror() { # this is run on the machine to be backed up
   return $ERR
 }
 
-server() ( # run from authorized_keys file on the backup server (ie. command="zfsync.sh recv zpool/backups")
-  TARGET="${1:-"zpool/backups"}" # the dataset path prefix including pool name (ie. zpool/backups)
+server() { # run from authorized_keys file on the backup server (ie. command="zfsync.sh receive zpool/backups")
+  TARGET="$1" # the dataset path prefix including pool name (ie. zpool/backups)
   # shellcheck disable=2086 # use word splitting below
   set -- $SSH_ORIGINAL_COMMAND
   SUBCMD="$1"; shift
   case "${SUBCMD}" in
-    status)
+    status) # return nothing if not exists, receive_resume_token= if resumable, or guid= if existing snapshot
       SOURCE="$1"
-      if RESUME="$(zfs list -Ho receive_resume_token "${TARGET}/${SOURCE}" 2>/dev/null)" && [ "${RESUME}" != '-' ]; then
+      if RESUME="$(zfs list -Ho receive_resume_token "${TARGET}/${SOURCE}")" 2>/dev/null || exit 0; [ "${RESUME}" != '-' ]; then
         printf 'receive_resume_token=%s' "${RESUME}"
-      elif GUID="$(zfs list -t snapshot -Ho guid -S creation "${TARGET}/${SOURCE}" 2>/dev/null | head -n 1)" && [ -n "${GUID}" ]; then
+      elif GUID="$(zfs list -t snapshot -Ho guid -S creation "${TARGET}/${SOURCE}" | head -n 1)"; [ -n "${GUID}" ]; then
         printf 'guid=%s' "${GUID}"
       fi
       ;;
-    recv)
-      SOURCE="$1"
-      if ! zfs list "${TARGET}" >/dev/null 2>&1; then
-        warn 'creating backup root dataset: %s' "${TARGET}"
-        zfs create -p -o encryption=off -o canmount=off -o mountpoint=none -o "${AUTOSNAPPROP}=false" "$TARGET"
-      fi
-      mbuffer | zfs receive -s \
-        -o canmount=noauto \
-        -o "${AUTOSNAPPROP}=false" \
-        "${TARGET}/${SOURCE}" >&2
-      SSH_ORIGINAL_COMMAND="status ${SOURCE}" server "${TARGET}"
+    recv|receive)
+      ARGS="$*"
+      OPTIONS="${ARGS% *}"
+      DATASET="${ARGS##* }"
+      [ "${OPTIONS}" != "${DATASET}" ] || OPTIONS=""
+      # shellcheck disable=2086 # don't quote OPTIONS
+      mbuffer | zfs receive ${OPTIONS} "${TARGET}/${DATASET}"
+      SSH_ORIGINAL_COMMAND="status ${DATASET}" server "${TARGET}"
       ;;
     send|list|destroy)
       ARGS="$*"
@@ -196,11 +201,11 @@ server() ( # run from authorized_keys file on the backup server (ie. command="zf
       ;;
     *)
       #shellcheck disable=2016 # don't expand %s below
-      printf 'fatal error: unknown command `%s`\n' "$SSH_ORIGINAL_COMMAND"
+      error 'fatal error: unknown command `%s`\n' "$SSH_ORIGINAL_COMMAND"
       exit 1
       ;;
   esac
-)
+}
 
 configuser() (
   USER="${1:-"zfsync"}"

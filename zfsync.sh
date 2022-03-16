@@ -3,13 +3,16 @@
 # developed with zfs-0.8.3
 # hosted at https://github.com/varasys/zfsync
 # script linted with shellcheck (https://www.shellcheck.net/)
+# initially meant to be posix sh compatable, but could not work out reliable enough error handling with posix sh
 
 # note that ~/.ssh/authorized_keys file on the backup server must have an entry of the following form:
 # command="zfsync.sh server pool/path" ssh-ed25519 <key> [comment]
 
+# [ ] TODO implement pre/post send/receive hooks (for cascade backups)
+# [ ] TODO implement localhost mirroring (without ssh)
 # [ ] TODO update sync logic to check for new latest snapshot after each send
-# [ ] TODO implement pruning
-# [ ] TODO implement creating dummy datasets on backup server for broken chains
+# [ ] TODO implement pruning (maybe; consider this may be best for seperate script; or may be best for this script to prune on remote also)
+# [ ] TODO implement creating dummy datasets on backup server for broken chains (probably not; let the user do this manually??)
 # [*] TODO config zfsync user (as sender and receiver)
 
 set -euo pipefail # fast fail on errors, undefined variables, and pipeline errors
@@ -18,8 +21,8 @@ AUTOSNAPPROP="${AUTOSNAPPROP:-"com.sun:auto-snapshot"}" # dataset user property 
 SNAPPREFIX="${SNAPPREFIX:-"zfsync_"}" # prefix for snapshot name
 DATECMD="${DATECMD:-"date -u +%F_%H-%M-%S_UTC"}" # command to generate snapshot name timestamp
 
-ERR=0 # error counter (incremented when error function is called
-trap 'exit $ERR' EXIT
+ERR=0 # error counter (incremented when error function is called)
+trap 'exit $ERR' EXIT # note that the connect function redefines this if it is called
 
 log() {
   MSG="$1"; shift
@@ -30,7 +33,7 @@ log() {
 debug() {
   MSG="$1"; shift
   # shellcheck disable=2059 # allow variable in printf format string
-  printf "\e[1m\e[96m${MSG}\e[0m\n" "$@" >&2
+  printf "\e[1m\e[4;36m${MSG}\e[0m\n" "$@" >&2
 }
 
 warn() {
@@ -65,6 +68,8 @@ snap() {
   # shellcheck disable=2015,2091 # accept logic and execute subcommand
   for ROOT in $([ $# -gt 0 ] && echo "$@" || zpool list -Ho name); do
     (
+      # shellcheck disable=2030 # ERR is local to subshell
+      ERR=0
       log 'creating snapshots for %s:' "${ROOT}"
       SNAPSHOTS="$(iterate "${ROOT}" "@${SNAPSHOT}")" || fatal 'error iterating %s' "${ROOT}"
       if [ -n "${SNAPSHOTS}" ]; then
@@ -87,23 +92,28 @@ snap() {
         fi
       fi
       exit $ERR
-    ) || ERR=$((ERR+$?))
+    ) || {
+      # shellcheck disable=2031 # ERR from subshell is $? in the following line
+      ERR=$((ERR+$?))
+    }
   done
 }
 
 connect() {
-  HOST="$1"
-  SOCKET="${HOME}/.ssh/zfsync_${HOST}_$(date +%s%N)"
-  log 'connecting to ssh host: %s ...' "${HOST}"
-  ssh -fMN -S "${SOCKET}" "${HOST}"
-  # shellcheck disable=2064 # expand HOST and SOCKET at definition time
-  trap "
-    log 'disconnecting from ssh host: %s ...' '${HOST}'
-    ssh -S '${SOCKET}' -O exit '${HOST}'
-    exit \$ERR
-  " EXIT
-  RPC=$(printf '%s -o ControlMaster=no -S %s %s' "$(command -v ssh)" "${SOCKET}" "${HOST}")
-  export RPC # need to export so function subshells have access
+  if [ -z "${RPC:-}" ]; then # don't reconnect if $RPC is already defined
+    HOST="$1"
+    SOCKET="${HOME}/.ssh/zfsync_${HOST}_$(date +%s%N)"
+    log 'connecting to ssh host: %s ...' "${HOST}"
+    ssh -fMN -S "${SOCKET}" "${HOST}"
+    # shellcheck disable=2064 # expand HOST and SOCKET at definition time
+    trap "
+      log 'disconnecting from ssh host: %s ...' '${HOST}'
+      ssh -S '${SOCKET}' -O exit '${HOST}'
+      exit \$ERR
+    " EXIT
+    RPC=$(printf '%s -o ControlMaster=no -S %s %s' "$(command -v ssh)" "${SOCKET}" "${HOST}")
+    export RPC # need to export so function subshells have access
+  fi
 }
 
 create_remote() {
@@ -115,7 +125,7 @@ create_remote() {
 resume_remote() {
   SOURCE="$1"
   TOKEN="$2"
-  zfs send -e -t "${TOKEN}" | mbuffer | $RPC recieve -s "${SOURCE}"
+  zfs send -e -t "${TOKEN}" | mbuffer | $RPC receive -s "${SOURCE}"
 }
 
 update_remote() {
@@ -128,44 +138,50 @@ update_remote() {
     | awk "\$2 == ${REMOTEGUID} { print \$1 }")"
   [ -n "${STARTSNAP}" ] || { error "can't find snapshot/bookmark for guid=%s" "${REMOTEGUID}"; exit 1; }
   FINISHSNAP="$(zfs list -t snap -Ho name -S creation "${SOURCE}" | head -n 1)"
-  zfs send -DLecwhp -I "${STARTSNAP}" "${FINISHSNAP}" | mbuffer | $RPC recieve -s "${SOURCE}"
+  zfs send -DLecwh -I "${STARTSNAP}" "${FINISHSNAP}" | mbuffer | $RPC receive -s "${SOURCE}"
 }
 
 mirror() { # this is run on the machine to be backed up
-  ERR=0
   # shellcheck disable=2015,2091 # accept logic and execute subcommand
   for ROOT in $([ $# -gt 0 ] && echo "$@" || zpool list -Ho name); do
-    for SOURCE in $(iterate "${ROOT}"); do
-      (
-        log 'mirroring %s ...' "${SOURCE}"
-        STATUS="$($RPC status "${SOURCE}")" || exit # error querying backup server
-        until
-          GUID="$(zfs list -t snap -Ho guid -S creation "${SOURCE}" | head -n 1)" || exit # invalid dataset error
-          [ -z "${GUID}" ] && { error "error mirroring %s - no existing snapshots" "${SOURCE}"; exit 1; }
-          [ "${GUID}" = "${STATUS#guid=}" ]
-        do
-          case "${STATUS}" in
-            receive_resume_token=*)
-              log '\nresuming: %s' "${SOURCE}"
-              STATUS="$(resume_remote "${SOURCE}" "${STATUS#receive_resume_token=}")" || exit
-              ;;
-            guid=*)
-              log '\nupdating %s (%s => %s)' "${SOURCE}" "${STATUS}" "${GUID}"
-              STATUS="$(update_remote "${SOURCE}" "${STATUS#guid=}")" || exit
-              ;;
-            *)
-              log '\ncreating: %s' "${SOURCE}"
-              STATUS="$(create_remote "${SOURCE}")" || exit
-              ;;
-          esac
-        done
-      ) || {
-        error 'error mirroring %s (%s)' "${SOURCE}" "$?"
-        ERR=$((ERR+1))
-      }
-    done
+    (
+      for SOURCE in $(iterate "${ROOT}" || fatal 'failed to iterate %s' "${ROOT}"); do
+        (
+          log 'mirroring %s ...' "${SOURCE}"
+          STATUS="$($RPC status "${SOURCE}")" || fatal 'error querying %s' "${SOURCE}"
+          until
+            debug "STATUS=%s" "$STATUS"
+            GUID="$(zfs list -t snap -Ho guid -S creation "${SOURCE}" | head -n 1)" || fatal 'error querying guid for %s' "${SOURCE}"
+            [ -z "${GUID}" ] && fatal "error mirroring %s - no existing snapshots" "${SOURCE}"
+            [ "${GUID}" = "${STATUS#guid=}" ] && debug 'complete: %s synced to GUID=%s' "${SOURCE}" "${GUID}"
+          do
+            case "${STATUS}" in
+              receive_resume_token=*)
+                log '\nresuming: %s' "${SOURCE}"
+                STATUS="$(resume_remote "${SOURCE}" "${STATUS#receive_resume_token=}")" || fatal 'error resuming %s' "${SOURCE}"
+                ;;
+              guid=*)
+                log '\nupdating %s (%s => %s)' "${SOURCE}" "${STATUS}" "${GUID}"
+                STATUS="$(update_remote "${SOURCE}" "${STATUS#guid=}")" || fatal 'error updating %s' "${SOURCE}"
+                ;;
+              *)
+                log '\ncreating: %s' "${SOURCE}"
+                STATUS="$(create_remote "${SOURCE}")" || fatal 'error creating remote %s' "${SOURCE}"
+                ;;
+            esac
+          done
+          exit $ERR
+        ) || {
+          # shellcheck disable=2030 # ERR from the subshell is $? below
+          ERR=$((ERR+$?))
+        }
+      done
+      exit $ERR
+    ) || {
+      # shellcheck disable=2031 # ERR from the subshell is $? below
+      ERR=$((ERR+$?))
+    }
   done
-  return $ERR
 }
 
 server() { # run from authorized_keys file on the backup server (ie. command="zfsync.sh receive zpool/backups")
@@ -174,22 +190,37 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
   set -- $SSH_ORIGINAL_COMMAND
   SUBCMD="$1"; shift
   case "${SUBCMD}" in
-    status) # return nothing if not exists, receive_resume_token= if resumable, or guid= if existing snapshot
+    status)
       SOURCE="$1"
-      if RESUME="$(zfs list -Ho receive_resume_token "${TARGET}/${SOURCE}")" 2>/dev/null || exit 0; [ "${RESUME}" != '-' ]; then
-        printf 'receive_resume_token=%s' "${RESUME}"
-      elif GUID="$(zfs list -t snapshot -Ho guid -S creation "${TARGET}/${SOURCE}" | head -n 1)"; [ -n "${GUID}" ]; then
-        printf 'guid=%s' "${GUID}"
+      debug 'querying remote status for %s' "${SOURCE}"
+      TOKEN="$(zfs list -Ho receive_resume_token "${TARGET}/${SOURCE}" 2>/dev/null)"
+      if [ "${TOKEN}" = "-" ]; then # dataset exists so check for guid
+        GUID="$(zfs list -t snapshot -Ho guid -S creation "${TARGET}/${SOURCE}" | head -n 1)"
+        if [ -n "${GUID}" ]; then
+          TOKEN="guid=${GUID}" # respond with the guid
+        else
+          TOKEN="detached" # the dataset exists, but has no snapshots
+        fi
+      elif [ -n "${TOKEN}" ]; then # there is a resume token (which is not '-') so use it
+        TOKEN="receive_resume_token=${TOKEN}"
+      else
+        TOKEN='missing'
       fi
+      debug '%s\n' "${TOKEN:-"something is wrong"}"
+      printf '%s' "${TOKEN}"
       ;;
     recv|receive)
       ARGS="$*"
       OPTIONS="${ARGS% *}"
       DATASET="${ARGS##* }"
       [ "${OPTIONS}" != "${DATASET}" ] || OPTIONS=""
+      # [ -n "${PRERECEIVEHOOK}" ] && { ${PRERECEIVEHOOK} "${TARGET}" || true; } # run pre-receive hook if defined
       # shellcheck disable=2086 # don't quote OPTIONS
       mbuffer | zfs receive ${OPTIONS} "${TARGET}/${DATASET}"
-      SSH_ORIGINAL_COMMAND="status ${DATASET}" server "${TARGET}"
+      # [ -n "${POSTRECEIVEHOOK}" ] && { ${POSTRECEIVEHOOK} "${TARGET}" || true; } # run post-receive hook if defined
+      TOKEN="$(SSH_ORIGINAL_COMMAND="status ${DATASET}" server "${TARGET}")"
+      debug 'post receive token: %s' "${TOKEN}"
+      printf '%s' "${TOKEN}"
       ;;
     send|list|destroy)
       ARGS="$*"
@@ -243,16 +274,22 @@ restart_as_root() {
 allowsend() (
   DATASET="$1"
   USER="${2:-"zfsync"}"
-  log "granting send,snapshot,bookmark permission to '%s' on dataset '%s'" "${USER}" "${DATASET}"
-  zfs allow -dlg "${USER}" send,snapshot,bookmark,hold "${DATASET}"
+  PERMS="send,snapshot,bookmark,hold"
+  log "granting '%s' permissions to '%s' on dataset '%s'" "${PERMS}" "${USER}" "${DATASET}"
+  zfs allow -dlg "${USER}" "${PERMS}" "${DATASET}"
   zfs allow "${DATASET}"
 )
 
 allowreceive() (
   DATASET="$1"
   USER="${2:-"zfsync"}"
-  log "granting receive,mount,create,userprop permission to '%s' on dataset '%s'" "${USER}" "${DATASET}"
-  zfs allow -dlg "${2:-"zfsync"}" receive,mount,create,userprop,encryption,canmount,mountpoint,compression,destroy,send "${DATASET}"
+  PERMS='receive,mount,create,userprop,encryption,canmount,mountpoint,compression,destroy,send,bookmark,keylocation'
+  if ! zfs list "${DATASET}" >/dev/null 2>&1; then
+    warn 'creating dataset %s' "${DATASET}"
+    zfs create -p "${DATASET}"
+  fi
+  log "granting '%s' permission to '%s' on dataset '%s'" "${PERMS}" "${USER}" "${DATASET}"
+  zfs allow -dlg "${2:-"zfsync"}" "${PERMS}" "${DATASET}"
   zfs allow "${DATASET}"
 )
 

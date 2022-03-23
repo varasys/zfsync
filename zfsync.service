@@ -1,7 +1,12 @@
 [Unit]
 Description=zfsync sync between zfs zpools
+Requires=zfs-volumes.target
+After=zfs-volumes.target
 
 [Service]
 Type=oneshot
-Environment="SOURCE=scavenger" "TARGET=passport" "DATASET=files"
-ExecStart=zfsync.sh sync
+User=zfsync
+ExecStart=zfsync backup localhost source
+
+[Install]
+WantedBy=multi-user.target

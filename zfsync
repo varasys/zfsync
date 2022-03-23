@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # ©, 2022, Casey Witt
 # developed with zfs-0.8.3
 # hosted at https://github.com/varasys/zfsync
@@ -6,18 +6,19 @@
 # initially meant to be posix sh compatable, but could not work out reliable enough error handling with posix sh
 
 # note that ~/.ssh/authorized_keys file on the backup server must have an entry of the following form:
-# command="zfsync.sh server pool/path" ssh-ed25519 <key> [comment]
+# restrict,command="zfsync server pool/path" ssh-ed25519 <key> [comment]
 
 # [ ] TODO implement pre/post send/receive hooks (for cascade backups)
 # [ ] TODO implement localhost mirroring (without ssh)
-# [ ] TODO update sync logic to check for new latest snapshot after each send
 # [ ] TODO implement pruning (maybe; consider this may be best for seperate script; or may be best for this script to prune on remote also)
 # [ ] TODO implement creating dummy datasets on backup server for broken chains (probably not; let the user do this manually??)
+# [*] TODO update sync logic to check for new latest snapshot after each send
 # [*] TODO config zfsync user (as sender and receiver)
 
 set -euo pipefail # fast fail on errors, undefined variables, and pipeline errors
 
 AUTOSNAPPROP="${AUTOSNAPPROP:-"com.sun:auto-snapshot"}" # dataset user property (set false to exclude dataset from snapshoting and backups)
+AUTOMIRRORPROP="${AUTOMIRRORPROP:-"${AUTOSNAPPROP}"}"
 SNAPPREFIX="${SNAPPREFIX:-"zfsync_"}" # prefix for snapshot name
 DATECMD="${DATECMD:-"date -u +%F_%H-%M-%S_UTC"}" # command to generate snapshot name timestamp
 
@@ -31,9 +32,11 @@ log() {
 }
 
 debug() {
-  MSG="$1"; shift
-  # shellcheck disable=2059 # allow variable in printf format string
-  printf "\e[1m\e[4;36m${MSG}\e[0m\n" "$@" >&2
+  if [ "${DEBUG:-}" = true ]; then # this will be set when first command line argument is "-d"
+    MSG="$1"; shift
+    # shellcheck disable=2059 # allow variable in printf format string
+    printf "\e[1m\e[4;36m${MSG}\e[0m\n" "$@" >&2
+  fi
 }
 
 warn() {
@@ -56,47 +59,19 @@ fatal() {
   exit 1
 }
 
-iterate() { # call this to return ordered list of datasets to operate on for snap and mirror
-  ROOT="$1"
-  SUFFIX="${2:-}"
-  zfs list -r -Ho "name,${AUTOSNAPPROP}" -s name "${ROOT}" \
-    | awk -v suf="${SUFFIX}" '{ if ($2 != "false") print $1 suf }'
-}
-
 snap() {
   SNAPSHOT="${SNAPPREFIX}$(${DATECMD})"
-  # shellcheck disable=2015,2091 # accept logic and execute subcommand
-  for ROOT in $([ $# -gt 0 ] && echo "$@" || zpool list -Ho name); do
-    (
-      # shellcheck disable=2030 # ERR is local to subshell
-      ERR=0
-      log 'creating snapshots for %s:' "${ROOT}"
-      SNAPSHOTS="$(iterate "${ROOT}" "@${SNAPSHOT}")" || fatal 'error iterating %s' "${ROOT}"
-      if [ -n "${SNAPSHOTS}" ]; then
-        printf '%s\n' "${SNAPSHOTS}"
-        #shellcheck disable=2086 # do not quote variables
-        if [ -n "${PRESNAPHOOK:-}" ]; then # run pre-snapshot hook if it is defined
-          ${PRESNAPHOOK} ${SNAPSHOTS} \
-            || error 'error running PRESNAPHOOK: %s' "${PRESNAPHOOK}"
-        fi
-        #shellcheck disable=2086 # do not quote $SNAPSHOTS
-        zfs snap ${SNAPSHOTS} || fatal 'error creating snaphots for %s' "${ROOT}"
-        for SNAP in ${SNAPSHOTS}; do # create bookmark of each snapshot
-          zfs bookmark "${SNAP}" "${SNAP%@*}#${SNAPSHOT}" \
-            || error 'error creating bookmark %s' "${SNAP%@*}#${SNAPSHOT}"
-        done
-        #shellcheck disable=2086 # do not quote variables
-        if [ -n "${POSTSNAPHOOK:-}" ]; then # run post-snapshot hook if it is defined
-          ${POSTSNAPHOOK} ${SNAPSHOTS} \
-            || error 'error running POSTSNAPHOOK: %s' "${POSTSNAPHOOK}"
-        fi
-      fi
-      exit $ERR
-    ) || {
-      # shellcheck disable=2031 # ERR from subshell is $? in the following line
-      ERR=$((ERR+$?))
-    }
-  done
+  SNAPSHOTS="$(zfs list -Ho "name,${AUTOSNAPPROP}" -s name "$@" \
+    | awk -v suf="@${SNAPSHOT}" '{ if ($2 != "false") print $1 suf }')"
+  if [ -n "${SNAPSHOTS}" ]; then
+    #shellcheck disable=2086 # do not quote variable
+    zfs snap ${SNAPSHOTS}
+    for SNAP in ${SNAPSHOTS}; do
+      zfs bookmark "${SNAP}" "${SNAP//\@/\#}"
+    done
+    #shellcheck disable=2086 # do not quote variable
+    zfs list -t snapshot,bookmark ${SNAPSHOTS} ${SNAPSHOTS//\@/\#}
+  fi
 }
 
 connect() {
@@ -119,7 +94,7 @@ connect() {
 create_remote() {
   SOURCE="$1"
   FIRST=$(zfs list -t snap -Ho name -s creation "${SOURCE}" | head -n 1)
-  zfs send -DLecwh "${FIRST}" | mbuffer | $RPC receive -s "${SOURCE}"
+  zfs send -DLcew "${FIRST}" | mbuffer | $RPC receive -s "${SOURCE}"
 }
 
 resume_remote() {
@@ -138,53 +113,43 @@ update_remote() {
     | awk "\$2 == ${REMOTEGUID} { print \$1 }")"
   [ -n "${STARTSNAP}" ] || { error "can't find snapshot/bookmark for guid=%s" "${REMOTEGUID}"; exit 1; }
   FINISHSNAP="$(zfs list -t snap -Ho name -S creation "${SOURCE}" | head -n 1)"
-  zfs send -DLecwh -I "${STARTSNAP}" "${FINISHSNAP}" | mbuffer | $RPC receive -s "${SOURCE}"
+  zfs send -DLcew -I "${STARTSNAP}" "${FINISHSNAP}" | mbuffer | $RPC receive -s "${SOURCE}"
 }
 
-mirror() { # this is run on the machine to be backed up
-  # shellcheck disable=2015,2091 # accept logic and execute subcommand
-  for ROOT in $([ $# -gt 0 ] && echo "$@" || zpool list -Ho name); do
-    (
-      for SOURCE in $(iterate "${ROOT}" || fatal 'failed to iterate %s' "${ROOT}"); do
-        (
-          log 'mirroring %s ...' "${SOURCE}"
-          STATUS="$($RPC status "${SOURCE}")" || fatal 'error querying %s' "${SOURCE}"
-          until
-            debug "STATUS=%s" "$STATUS"
-            GUID="$(zfs list -t snap -Ho guid -S creation "${SOURCE}" | head -n 1)" || fatal 'error querying guid for %s' "${SOURCE}"
-            [ -z "${GUID}" ] && fatal "error mirroring %s - no existing snapshots" "${SOURCE}"
-            [ "${GUID}" = "${STATUS#guid=}" ] && debug 'complete: %s synced to GUID=%s' "${SOURCE}" "${GUID}"
-          do
-            case "${STATUS}" in
-              receive_resume_token=*)
-                log '\nresuming: %s' "${SOURCE}"
-                STATUS="$(resume_remote "${SOURCE}" "${STATUS#receive_resume_token=}")" || fatal 'error resuming %s' "${SOURCE}"
-                ;;
-              guid=*)
-                log '\nupdating %s (%s => %s)' "${SOURCE}" "${STATUS}" "${GUID}"
-                STATUS="$(update_remote "${SOURCE}" "${STATUS#guid=}")" || fatal 'error updating %s' "${SOURCE}"
-                ;;
-              *)
-                log '\ncreating: %s' "${SOURCE}"
-                STATUS="$(create_remote "${SOURCE}")" || fatal 'error creating remote %s' "${SOURCE}"
-                ;;
-            esac
-          done
-          exit $ERR
-        ) || {
-          # shellcheck disable=2030 # ERR from the subshell is $? below
-          ERR=$((ERR+$?))
-        }
+mirror() {
+  DATASETS="$(zfs list -Ho "name,${AUTOMIRRORPROP}" -s name "$@" \
+    | awk '{ if ($2 != "false") print $1 }')"
+  for DATASET in ${DATASETS}; do
+    ( # operate in a subshell so fatel error won't exit script
+      log '\nmirroring %s ...' "${DATASET}"
+      STATUS="$($RPC status "${DATASET}")"
+      until
+        debug 'remote STATUS: %s' "$STATUS"
+        GUID="$(zfs list -t snap -Ho guid -S creation "${DATASET}" | head -n 1)" || fatal 'error querying guid for %s' "${DATASET}"
+        debug 'local GUID: %s' "$GUID"
+        [ -z "${GUID}" ] && error "error mirroring %s - no existing snapshots" "${DATASET}" && continue
+        [ "${GUID}" = "${STATUS#guid=}" ] && debug 'complete: %s synced to GUID=%s' "${DATASET}" "${GUID}"
+      do
+        case "${STATUS}" in
+          receive_resume_token=*)
+            log 'resuming: %s ...' "${DATASET}"
+            STATUS="$(resume_remote "${DATASET}" "${STATUS#receive_resume_token=}")" || fatal 'error resuming %s' "${DATASET}"
+            ;;
+          guid=*)
+            log 'updating %s (%s => %s) ...' "${DATASET}" "${STATUS}" "${GUID}"
+            STATUS="$(update_remote "${DATASET}" "${STATUS#guid=}")" || fatal 'error updating %s' "${DATASET}"
+            ;;
+          *)
+            log 'creating: %s ...' "${DATASET}"
+            STATUS="$(create_remote "${DATASET}")" || fatal 'error creating remote %s' "${DATASET}"
+            ;;
+        esac
       done
-      exit $ERR
-    ) || {
-      # shellcheck disable=2031 # ERR from the subshell is $? below
-      ERR=$((ERR+$?))
-    }
+    )
   done
 }
 
-server() { # run from authorized_keys file on the backup server (ie. command="zfsync.sh receive zpool/backups")
+server() { # run from authorized_keys file on the backup server (ie. command="zfsync receive zpool/backups")
   TARGET="$1" # the dataset path prefix including pool name (ie. zpool/backups)
   # shellcheck disable=2086 # use word splitting below
   set -- $SSH_ORIGINAL_COMMAND
@@ -192,7 +157,6 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
   case "${SUBCMD}" in
     status)
       SOURCE="$1"
-      debug 'querying remote status for %s' "${SOURCE}"
       TOKEN="$(zfs list -Ho receive_resume_token "${TARGET}/${SOURCE}" 2>/dev/null)"
       if [ "${TOKEN}" = "-" ]; then # dataset exists so check for guid
         GUID="$(zfs list -t snapshot -Ho guid -S creation "${TARGET}/${SOURCE}" | head -n 1)"
@@ -206,7 +170,6 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
       else
         TOKEN='missing'
       fi
-      debug '%s\n' "${TOKEN:-"something is wrong"}"
       printf '%s' "${TOKEN}"
       ;;
     recv|receive)
@@ -274,7 +237,7 @@ restart_as_root() {
 allowsend() (
   DATASET="$1"
   USER="${2:-"zfsync"}"
-  PERMS="send,snapshot,bookmark,hold"
+  PERMS="send,snapshot,bookmark"
   log "granting '%s' permissions to '%s' on dataset '%s'" "${PERMS}" "${USER}" "${DATASET}"
   zfs allow -dlg "${USER}" "${PERMS}" "${DATASET}"
   zfs allow "${DATASET}"
@@ -305,64 +268,83 @@ showkey() (
   # shellcheck disable=2016 # do not expand $HOME in the following line
   log 'copy the following line into the "$HOME/.ssh/authorized_keys" file on the backup server'
   [ "${DATASET}" = "<dataset>" ] && log 'change <dataset> to the root dataset for the backups on the backup server'
-  printf '\ncommand="%s server %s" %s\n\n' "$(basename "$0")" "${DATASET}" "${KEY}"
+  printf '\nrestrict,command="%s server %s" %s\n\n' "$(basename "$0")" "${DATASET}" "${KEY}"
 )
 
+if [ "$1" = '-d' ]; then
+  DEBUG=true
+  shift
+fi
 CMD="${1:-}"
 [ $# -gt 0 ] && shift
 case "${CMD}" in
-  snap)
-    # help: \nsnap: recursively create new snapshots
-    # help:   zfsync.sh snap [pool|dataset]
+  'snap')
+    # help: \nsnap: create new snapshot(s)
+    # help:   zfsync snap [-r|-d depth] <dataset> ...
     snap "$@";;
-  mirror)
-    # help: \nsync: recursively mirror snapshots to remote server
-    # help:   zfsync.sh mirror <host> [pool|dataset]
+  'mirror')
+    # help: \nsync: mirror snapshot(s) to remote server
+    # help:   zfsync mirror <host> [-r|-d depth] <dataset> ...
     HOST="$1"; shift
     connect "${HOST}"
     mirror "$@";;
-  server)
+  'backup')
+    # help: \nbackup: run `snap` and then `mirror` in a single command
+    # help:   zfsync backup <host> [-r|-d depth] <dataset> ...
+    HOST="$1"; shift
+    snap "$@"
+    connect "${HOST}"
+    mirror "$@";;
+  'server')
     # help: \nserver: run in server mode on the backup host (from .ssh/authorized_keys file)
-    # help:   zfsync.sh server <dataset>
+    # help:   zfsync server <dataset>
     server "$@";;
-  list)
+  'list')
     # help: \nlist: run `zfs list` remotely on backup server (ie. query the backup server from the client)
-    # help:   zfsync.sh list <host> [options] <dataset>
+    # help:   zfsync list <host> [options] <dataset> ...
     HOST="$1"; shift
     connect "${HOST}"
     $RPC list "$@";;
-  destroy)
-    # help: \ndestroy: run `zfs destroy` remotely on backup server
-    # help:   zfsync.sh destroy [options] <dataset>
+  'destroy')
+    # help: \ndestroy: run `zfs destroy` remotely on backup server (ie. destroy dataset on server from the client)
+    # help:   zfsync destroy <host> [options] <dataset>
     HOST="$1"; shift
     connect "${HOST}"
     $RPC destroy "$@";;
-  recover)
-    # help: \nsend: run `zfs send` remotely on backup server (ie. to restore a snaphshot from the backup server)
-    # help:   zfsync.sh recover <host> [options] <dataset>
+  'recover')
+    # help: \nrecover: run `zfs send` remotely on backup server (ie. to restore a snaphshot from the backup server)
+    # help:   zfsync recover <host> [options] <dataset>
     HOST="$1"; shift
     connect "${HOST}"
     $RPC send "$@";;
-  configuser)
-    # help: \nconfiguser: create zfsync user, /etc/zfsync directory, and /etc/zfsync/.ssh/id_ed25519 ssh key
-    # help:   zfsync.sh configuser [username]
+  'configuser')
+    # help: \nconfiguser: create zfsync user, /etc/zfsync directory, and /etc/zfsync/id_ed25519 ssh key
+    # help:   zfsync configuser [username]
     restart_as_root configuser "$@"
     configuser "$@";;
-  allowsend)
-    # help: \nallowsend: add zfs "send,snapshot,mount" permission for zfsync user to dataset (on client machine)
-    # help:   zfsync.sh allowsend <dataset> [username]
+  'allowsend')
+    # help: \nallowsend: delegate zfs permissions to zfsync user to be able to send dataset (on client)
+    # help:   zfsync allowsend <dataset> [username]
     restart_as_root allowsend "$@"
     allowsend "$@";;
-  allowreceive)
+  'allowreceive')
+    # help: \nallowreceive: delegate zfs permissions to zfsync user to be able to receive into dataset (on server)
     # help: \nallowreceive: add zfs "receive,mount,create" permission for zfsync user to dataset (on backup server)
-    # help:   zfsync.sh allowreceive <dataset> [username]
+    # help:   zfsync allowreceive <dataset> [username]
     restart_as_root allowreceive "$@"
     allowreceive "$@";;
-  showkey)
+  'showkey')
     # help: \nshow line to add to backup server authorized_keys file (run on client)
-    # help:   zfsync.sh showkey <dataset> [user]
+    # help:   zfsync showkey <dataset> [user]
     showkey "$@";;
   *)
-    error "\nfatal error: unknown command%s" "${CMD:+": \`${CMD}\`"}"
+    case "${CMD}" in
+      '-h'|'--help')
+        ;;
+      *)
+        error "\nfatal error: unknown command%s" "${CMD:+": \`${CMD}\`"}"
+        ;;
+    esac
+    printf 'zfsync is a shell script to create and mirror zfs snapshots.\nusage:\n'
     grep '# help: ' "$0" | grep -v 'grep' | sed 's/ *# help: //g' | sed 's/\\n/\n/g';;
 esac

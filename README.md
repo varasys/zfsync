@@ -27,8 +27,11 @@ Systemd service and timer files are included to run it as a system service perio
 ## Reference
 
 ### `zfsync snap`
+**zfssync snap** [**-r**|**-d** *depth*] *\<dataset>* ...
+Create snapshot of each <dataset>. Specify the '-r' flag to include all child datasets, or the '-d depth' option to specify how many levels of children to include. Datasets with the 'com.sun:auto-snapshot' property set to 'false' will not be included (see AUTOSNAPPROP environment variable below).
 
-**zfssync snap** [**-r**|**-d** *depth*] *<dataset>* ...
+For each snapshot a bookmark will also be created. This allows the snapshot, which takes storage space, to be destroyed in the future, and still allow the bookmark, which does not take any storage space, to be used as the basis for an incremental send.
 
-
-
+### `zfsync mirror`
+**zfsync mirror** *\<host\>* [**-r**|**-d** *depth*] *\<dataset\>* ...
+Mirror 

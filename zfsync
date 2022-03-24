@@ -283,7 +283,7 @@ case "${CMD}" in
     # help:   zfsync snap [-r|-d depth] <dataset> ...
     snap "$@";;
   'mirror')
-    # help: \nsync: mirror snapshot(s) to remote server
+    # help: \nmirror: mirror snapshot(s) to remote server
     # help:   zfsync mirror <host> [-r|-d depth] <dataset> ...
     HOST="$1"; shift
     connect "${HOST}"

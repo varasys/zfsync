@@ -56,6 +56,8 @@ This command is meant to be run from the 'authorized_keys' file on the backup se
 
 ### Interacting with the remote backup server
 
+The following commands just forward standard zfs commands to the remote server. `zfsync` is specifically designed to backup encrypted datasets on marginally trusted third party servers, and there is no expectation that the person performing the backup has any access to the remote backup server other than through these commands. These commands should be secure because the remote backup server is configured to run from the authorized_keys file on a non-privileged user, and access to the datasets is restricted to just the children of the dataset specified in the `zfsync server <dataset>` command.
+
 **zfsync list** *\<host\>* [options] *\<dataset\>* ...
 
 This command executes `zfs list [options] \<dataset_root\>/\<dataset\> ...` on the remote backup server to allow the datasets on the backup server to be queried from the local computer. The options are the same options that apply to the `zfs list` command. Note that the remote backup server automatically prepends the \<dataset_root\> (from the command string in the authorized_keys file).
@@ -90,3 +92,7 @@ This command is used on the remote backup server and runs `zfs allow` to delegat
 
 There is a script called `inittest.sh` which creates two file based zpools (source and target) which were used during the testing and development of this script. These are included in case any users want to use it to test out `zfsync` functionality. Normally `zfsync` would be used to mirror datasets between two different hosts, but for testing and experimenting it will work with 'localhost' as the remote backup server.
 
+## TODO
+
+[ ] implement hooks (ie. such as a post-receive hook to allow backups to be cascaded to other backups for redundancy); this is trivial to implement, but I want to get more experience using the basic script first to make sure it meets all the basic needs
+[ ] implement pruning; this is non-trivial and there are lots of different use cases (laptop => backup server wants to prune more on the backup server; but production server to backup server wants to prune more on the production server for example) - I expect this is probably best implemented in a separate script which can be called from hooks in `zfsync`

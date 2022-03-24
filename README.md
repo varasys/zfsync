@@ -27,11 +27,35 @@ Systemd service and timer files are included to run it as a system service perio
 ## Reference
 
 ### `zfsync snap`
+
 **zfssync snap** [**-r**|**-d** *depth*] *\<dataset>* ...
-Create snapshot of each <dataset>. Specify the '-r' flag to include all child datasets, or the '-d depth' option to specify how many levels of children to include. Datasets with the 'com.sun:auto-snapshot' property set to 'false' will not be included (see AUTOSNAPPROP environment variable below).
+
+Create snapshot of each <dataset>. Specify the '-r' flag to include all child datasets, or the '-d depth' option to specify how many levels of children to include. Datasets with the 'com.sun:auto-snapshot' user property set to 'false' will not be included (see AUTOSNAPPROP environment variable below).
 
 For each snapshot a bookmark will also be created. This allows the snapshot, which takes storage space, to be destroyed in the future, and still allow the bookmark, which does not take any storage space, to be used as the basis for an incremental send.
 
 ### `zfsync mirror`
+
 **zfsync mirror** *\<host\>* [**-r**|**-d** *depth*] *\<dataset\>* ...
-Mirror 
+
+Mirror the latest snapshot of each <dataset> to <host>. Specify the '-r' flag to include all child datasets, or the '-d depth' option to specify how many levels of children to include. Datasets with the 'com.sun:auto-snapshot' user property set to 'false' will not be included (see AUTOMIRRORPROP environment variable below).
+
+This command will query <host> to see whether <dataset> already exists (under <dateset_root>), and will create it if required. Then it will perform incremental sends to transfer all snapshots from the local computer which are newer than the newest snapshot on <host>.
+
+This command uses `ssh` to connect to <host>, and the 'authorized_keys' file on <host> to run `zfsync server <dataset_root>` to provide the receiving functionality. In this way, the administrator of <host> has control to ensure the correct version of `zfsync` is running, and can restrict the datasets which may be manipulated to only those under <dataset_root>.
+
+It is recommended to use the `zfsync configuser` command (see below) to setup a dedicated user instead of running the script as root or a normal user.
+
+### `zfsync backup`
+
+**zfsync backup** *\<host\>* [**-r**|**-d** *depth*] *\<dataset\>* ...
+
+The backup command is just a convenience function to run `zfs snap` and then `zfs mirror`.
+
+### `zfsync server`
+
+**zfsync server** *\<dataset_root\>*
+
+This command is meant to be run from the 'authorized_keys' file on the backup server (see authorized_keys in sshd manpage). This allows the computer being backed up to connect with `ssh` and query, send, receive, or destroy any dataset below <dataset_root>.
+
+

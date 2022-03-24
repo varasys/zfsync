@@ -94,13 +94,13 @@ connect() {
 create_remote() {
   SOURCE="$1"
   FIRST=$(zfs list -t snap -Ho name -s creation "${SOURCE}" | head -n 1)
-  zfs send -DLcew "${FIRST}" | mbuffer | $RPC receive -s "${SOURCE}"
+  zfs send -DLcew "${FIRST}" | mbuffer -s 128k -q | $RPC receive -s "${SOURCE}"
 }
 
 resume_remote() {
   SOURCE="$1"
   TOKEN="$2"
-  zfs send -e -t "${TOKEN}" | mbuffer | $RPC receive -s "${SOURCE}"
+  zfs send -e -t "${TOKEN}" | mbuffer -s 128k -q | $RPC receive -s "${SOURCE}"
 }
 
 update_remote() {
@@ -113,7 +113,7 @@ update_remote() {
     | awk "\$2 == ${REMOTEGUID} { print \$1 }")"
   [ -n "${STARTSNAP}" ] || { error "can't find snapshot/bookmark for guid=%s" "${REMOTEGUID}"; exit 1; }
   FINISHSNAP="$(zfs list -t snap -Ho name -S creation "${SOURCE}" | head -n 1)"
-  zfs send -DLcew -I "${STARTSNAP}" "${FINISHSNAP}" | mbuffer | $RPC receive -s "${SOURCE}"
+  zfs send -DLcew -I "${STARTSNAP}" "${FINISHSNAP}" | mbuffer -s 128k -q | $RPC receive -s "${SOURCE}"
 }
 
 mirror() {
@@ -179,7 +179,7 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
       [ "${OPTIONS}" != "${DATASET}" ] || OPTIONS=""
       # [ -n "${PRERECEIVEHOOK}" ] && { ${PRERECEIVEHOOK} "${TARGET}" || true; } # run pre-receive hook if defined
       # shellcheck disable=2086 # don't quote OPTIONS
-      mbuffer | zfs receive ${OPTIONS} "${TARGET}/${DATASET}"
+      mbuffer -s 128k | zfs receive ${OPTIONS} "${TARGET}/${DATASET}"
       # [ -n "${POSTRECEIVEHOOK}" ] && { ${POSTRECEIVEHOOK} "${TARGET}" || true; } # run post-receive hook if defined
       TOKEN="$(SSH_ORIGINAL_COMMAND="status ${DATASET}" server "${TARGET}")"
       debug 'post receive token: %s' "${TOKEN}"

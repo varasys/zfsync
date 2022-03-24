@@ -40,7 +40,7 @@ Mirror the latest snapshot of each \<dataset\> to \<host\>. Specify the '-r' fla
 
 This command will query \<host\> to see whether \<dataset\> already exists (under \<dateset_root\>), and will create it if required. Then it will perform incremental sends to transfer all snapshots from the local computer which are newer than the newest snapshot on \<host\>.
 
-This command uses `ssh` to connect to \<host\>, and the 'authorized_keys' file on \<host\> to run `zfsync server \<dataset_root\>` to provide the receiving functionality. In this way, the administrator of \<host\> has control to ensure the correct version of `zfsync` is running, and can restrict the datasets which may be manipulated to only those under \<dataset_root\>.
+This command uses `ssh` to connect to \<host\>, and the 'authorized_keys' file on \<host\> to run `zfsync server <dataset_root>` to provide the receiving functionality. In this way, the administrator of \<host\> has control to ensure the correct version of `zfsync` is running, and can restrict the datasets which may be manipulated to only those under \<dataset_root\>.
 
 It is recommended to use the `zfsync configuser` command (see below) to setup a dedicated user instead of running the script as root or a normal user.
 
@@ -84,7 +84,7 @@ This command is used on the local computer and runs `zfs allow` to delegate the 
 
 **zfsync allowreceive** *\<dataset\>* *\<key\>* [username]
 
-This command is used on the remote backup server and runs `zfs allow` to delegate the required permissions to the zfsync user to be able to execute `zfs receive`. The command will update the "$HOME/.ssh/authorized_keys" file with the ssh key to run the `zfsync server \<dataset\>` command when the user with that key connects via `ssh`. Note that the key argument should be quoted.
+This command is used on the remote backup server and runs `zfs allow` to delegate the required permissions to the zfsync user to be able to execute `zfs receive`. The command will update the "$HOME/.ssh/authorized_keys" file with the ssh key to run the `zfsync server <dataset>` command when the user with that key connects via `ssh`. Note that the key argument should be quoted.
 
 ## `inittest.sh`
 

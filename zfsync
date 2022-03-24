@@ -240,7 +240,7 @@ restart_as_root() {
 allowsend() {
   DATASET="$1"
   USER="${2:-"zfsync"}"
-  PERMS="send,snapshot,bookmark"
+  PERMS="send,snapshot,bookmark,hold"
   log "granting '%s' permissions to '%s' on dataset '%s'" "${PERMS}" "${USER}" "${DATASET}"
   zfs allow "${USER}" "${PERMS}" "${DATASET}"
   zfs allow "${DATASET}"
@@ -248,7 +248,7 @@ allowsend() {
   HOMEDIR="$(su -c 'echo "$HOME"' - "${USER}")"
   if [ -f "${HOMEDIR}/.ssh/id_ed25519.pub" ]; then
     # shellcheck disable=2016 # don't execute command below
-    log 'use the following key with the `zfs allowreceive` command on the remote backup server:'
+    warn 'use the following key with the `zfs allowreceive` command on the remote backup server:'
     cat "${HOMEDIR}/.ssh/id_ed25519.pub"
   else
     warn 'public key not found at: %s' "${HOMEDIR}/.ssh/id_ed25519"
@@ -270,9 +270,9 @@ allowreceive() {
   AUTHCMD="restrict,command=\"zfsync server ${DATASET}\" ${KEY}"
   # shellcheck disable=2016 # don't expand $HOME below
   HOMEDIR="$(su -c 'echo "$HOME"' - "${USER}")"
-  if grep -q "${AUTHCMD}" "${HOMEDIR}/.ssh/authorized_keys"; then
+  if grep -q "${AUTHCMD}" "${HOMEDIR}/.ssh/authorized_keys" 2>/dev/null; then
     log 'authorized_keys file already contains the specified key'
-  elif grep "${KEY}" "${HOMEDIR}/.ssh/authorized_keys"; then
+  elif grep "${KEY}" "${HOMEDIR}/.ssh/authorized_keys" 2>/dev/null; then
     warn '%s already contains the specified key; but may not be correct' "${HOMEDIR}/.ssh/authorized_keys"
     warn 'manually update with the following:'
     echo "${AUTHCMD}"

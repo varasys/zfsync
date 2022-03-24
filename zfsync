@@ -271,7 +271,7 @@ showkey() (
   printf '\nrestrict,command="%s server %s" %s\n\n' "$(basename "$0")" "${DATASET}" "${KEY}"
 )
 
-if [ "$1" = '-d' ]; then
+if [ "${1:-}" = '-d' ]; then
   DEBUG=true
   shift
 fi

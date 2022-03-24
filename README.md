@@ -28,7 +28,7 @@ Systemd service and timer files are included to run it as a system service perio
 
 ### `zfsync snap`
 
-`**zfssync snap** [**-r**|**-d** *depth*] *<dataset>* ...`
+**zfssync snap** [**-r**|**-d** *depth*] *<dataset>* ...
 
 
 

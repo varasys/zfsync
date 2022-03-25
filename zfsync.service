@@ -2,11 +2,11 @@
 Description=zfsync sync between zfs zpools
 Requires=zfs-volumes.target
 After=zfs-volumes.target
+ConditionPathExists=/etc/zfsync/config
 
 [Service]
 Type=oneshot
 User=zfsync
-ExecStart=zfsync backup localhost source
-
-[Install]
-WantedBy=multi-user.target
+EnvironmentFile=/etc/zfsync/config
+ExecStart=zfsync snap $DATASETS
+ExecStartPost=nice -n 19 ionice -c 3 zfsync mirror $SERVER $DATASETS

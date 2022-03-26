@@ -10,9 +10,10 @@ VERSION="0.0.1"
 # note that ~/.ssh/authorized_keys file on the backup server must have an entry of the following form:
 # restrict,command="zfsync server pool/path" ssh-ed25519 <key> [comment]
 
+# [ ] TODO make recover work with intermediate snapshows (ie. apply proper prefix or determine if not necessary)
+# [ ] TODO add quota option to `zfsync allowreceive`
 # [ ] TODO create udev rule to import pool and perform mirror on usb drive hotplug
 # [ ] TODO seperate snap and mirror into two seperate systemd services
-# [ ] TODO make recover work with intermediate snapshows (ie. apply proper prefix or determine if not necessary)
 # [ ] TODO implement pre/post send/receive hooks (for cascade backups)
 # [ ] TODO implement localhost mirroring (without ssh)
 # [ ] TODO implement pruning (maybe; consider this may be best for seperate script; or may be best for this script to prune on remote also)

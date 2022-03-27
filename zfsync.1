@@ -1,0 +1,522 @@
+.\" Copyright 2022 Casey Witt
+.\" reference at https://manpages.bsd.lv
+.\"
+.Dd March 24, 2022
+.Dt ZFSYNC 1 SMM
+.Os
+.Sh NAME
+.Nm zfsync
+.Nd snapshot and backup utility for ZFS file systems
+.Sh SYNOPSIS
+.Nm \" help command
+.Fl ?
+.Nm \" snapshot command
+.Cm snapshot
+.Op Fl r Ns | Ns Fl d Ar depth
+.Ar filesystem Ns | Ns Ar volume Ns ...
+.Nm \" mirror command
+.Cm mirror
+.Ar destination
+.Op Fl r Ns | Ns Fl d Ar depth
+.Ar filesystem Ns | Ns Ar volume Ns ...
+.Nm \" backup command
+.Cm backup
+.Ar destination
+.Op Fl r Ns | Ns Fl d Ar depth
+.Ar filesystem Ns | Ns Ar volume Ns ...
+.Nm \" server command
+.Cm server
+.Ar filesystem
+.Nm \" list
+.Cm list
+.Ar destination
+.Op Fl r Ns | Ns Fl d Ar depth
+.Op Fl Hp
+.Oo Fl o Ar property Ns Oo , Ns Ar property Oc Ns ... Oc
+.Oo Fl s Ar property Oc Ns ...
+.Oo Fl S Ar property Oc Ns ...
+.Oo Fl t Ar type Ns Oo , Ns Ar type Oc Ns ... Oc
+.Oo Ar filesystem Ns | Ns Ar volume Ns | Ns Ar snapshot Oc Ns ...
+.Nm \" destroy
+.Cm destroy
+.Ar destination
+.Op Fl Rfnprv
+.Ar filesystem Ns | Ns Ar volume
+.Nm
+.Cm destroy
+.Ar destination
+.Op Fl Rdnprv
+.Ar filesystem Ns | Ns Ar volume Ns @ Ns Ar snap Ns
+.Oo % Ns Ar snap Ns Oo , Ns Ar snap Ns Oo % Ns Ar snap Oc Oc Oc Ns ...
+.Nm
+.Cm destroy
+.Ar destination
+.Ar filesystem Ns | Ns Ar volume Ns # Ns Ar bookmark
+.Nm \" recover
+.Cm recover
+.Op Fl DLPRbcehnpvw
+.Op Oo Fl I Ns | Ns Fl i Oc Ar snapshot
+.Ar snapshot
+.Nm
+.Cm recover
+.Op Fl LPcenvw
+.Op Fl i Ar snapshot Ns | Ns Ar bookmark
+.Ar filesystem Ns | Ns Ar volume Ns | Ns Ar snapshot
+.Nm
+.Cm recover
+.Op Fl Penv
+.Fl t Ar receive_resume_token
+.Nm \" configuser
+.Cm configuser
+.Oo Ar username Oc
+.Oo Ar home_dir Oc
+.Nm \" allowsend
+.Cm allowsend
+.Ar filesystem
+.Oo Ar username Oc
+.Nm \" allowreceive
+.Cm allowreceive
+.Ar filesystem
+.Ar key
+.Oo Ar username Oc
+.Nm \" version
+.Cm version
+.Sh DESCRIPTION
+The
+.Nm
+script is used to create snapshots of a zfs filesystem along with corresponding
+bookmarks, and to mirror snapshots to a marginally trusted remote backup
+server over ssh.
+The design goals of the script are to be simple to use, not depend on any
+metadata stored in the zfs filesystem itself, be fault tolerant and able to
+resume mirror operations which were interrupted.
+No configuration is required to use the
+.Nm Cm snapshot
+command, and minimal configuration is required on the remote backup server to
+use the
+.Nm Cm mirror
+command.
+The only assumption made by the script is that bookmarks are never deleted on
+the sending side (which means there is no need to maintain holds on snapshots).
+.Pp
+All snapshots are sent raw (ie. with the
+.Fl w
+flag) so that encrypted snapshots may be sent without the decryption key ever
+being known by the remote backup server.
+.Pp
+The
+.Xr sshd 8
+authorized_keys mechanism is used on the remote backup server to allow
+ssh access by a non-privileged user, and to run
+.Nm
+.Cm server
+.Ar filesystem
+instead of a login shell which will which will restrict access to a limited
+number of
+.Xr zfs 8
+commands that are sandboxed to
+.Ar filesystem
+and its descendants.
+.Pp
+The
+.Cm configuser ,
+.Cm allowsend ,
+and
+.Cm allowreceive
+subcommands are provided to create a non-privileges zfsync system user,
+configure the local and remote systems, and delegate zfs permissions as
+required.
+.Pp
+The
+.Cm list ,
+.Cm destroy ,
+and
+.Cm recover
+subcommands are provided to list, destroy, and recover snapshots from the
+remote backup server.
+These subcommands are simple wrappers that forward the command over ssh and
+run it on the remote backup server (where the
+.Cm recover
+command runs
+.Cm send ) .
+.Sh SUBCOMMANDS
+.Bl -tag -width ""
+.It Nm Fl ?
+Displays a help message.
+.It Xo
+.Nm
+.Fl V, -version
+.Xc
+An alias for the
+.Nm Cm version
+subcommand.
+.El
+.Ss SNAPSHOT AND MIRROR SUBCOMMANDS
+.Bl -tag -width ""
+.It Xo
+.Nm
+.Cm snapshot
+.Op Fl r Ns | Ns Fl d Ar depth
+.Ar filesystem Ns ...
+.Xc
+Creates snapshot(s), and coresponding bookmark(s) of
+.Ar filesystem(s) .
+.Pp
+The snapshot/bookmark name(s) will be determined from the
+.Ev SNAPPREFIX
+environment variable concatinated with the date based on
+the command in the
+.Ev DATECMD
+environment variable.
+.Pp
+All
+.Ar filesystem
+arguments are passed together to the
+.Cm zfs snapshot
+command so they are created atomically.
+.Bl -tag -width "-o"
+.It Fl r
+Create recursive snapshots of all descendant filesystems.
+.It Fl d Ar property Ns = Ns Ar depth
+Create recursive snapshots of
+.Ar depth
+levels of descendant filesystems.
+.El
+.It Xo
+.Nm \" mirror command
+.Cm mirror
+.Ar destination
+.Op Fl r Ns | Ns Fl d Ar depth
+.Ar filesystem Ns ...
+.Xc
+Mirrors snapshots from the local computer to the remote backups server at
+.Ar destination .
+The
+.Fl r
+and
+.Fl d
+.Ar depth
+options are the same as the
+.Nm
+.Cm snapshot
+subcommand.
+.Pp
+In order for the remote backup server to receive the snapshots it must execute
+the
+.Nm
+.Cm server
+command using the
+.Xr sshd 8
+authorized_keys functionality. The local user must use an ssh key
+to login to the remote backup server (password login is not supported since
+the remote backup server security is provided by the authorized_keys
+mechanism).
+.It Xo
+.Nm \" backup command
+.Cm backup
+.Ar destination
+.Op Fl r Ns | Ns Fl d Ar depth
+.Ar filesystem Ns ...
+.Xc
+Runs
+.Nm
+.Cm snapshot
+command followed by
+.Nm
+.Cm mirror
+command with the same flags and options that apply to those subcommands.
+.El
+.Ss REMOTE BACKUP SERVER COMMAND
+.Bl -tag -width ""
+.It Xo
+.Nm \" server command
+.Cm server
+.Ar filesystem
+.Xc
+This command must be run from the
+.Xr sshd 8
+authorized_keys file on the remote backup server were the
+.Ar filesystem
+argument specifies the root filesystem under which to receive all snapshots.
+This will be prefixed to all snapshots received, queried, destroyed, or
+recovered to ensure that the sender only has access to filesystems below this
+root as a security measure.
+.Pp
+In order to further enhance security, the "restrict" option should also be
+used in the authorized_keys file to ensure the sender is not able to perform
+malicous activities such as port forwarding, etc.
+.El
+.Ss SUBCOMMANDS TO LIST, DESTROY, AND RECOVER FROM REMOTE BACKUP SERVER
+.Bl -tag -width ""
+.It Xo
+.Nm \" list
+.Cm list
+.Ar destination
+.Op Fl r Ns | Ns Fl d Ar depth
+.Op Fl Hp
+.Oo Fl o Ar property Ns Oo , Ns Ar property Oc Ns ... Oc
+.Oo Fl s Ar property Oc Ns ...
+.Oo Fl S Ar property Oc Ns ...
+.Oo Fl t Ar type Ns Oo , Ns Ar type Oc Ns ... Oc
+.Oo Ar filesystem Ns | Ns Ar volume Ns | Ns Ar snapshot Oc Ns ...
+.Xc
+This command executes
+.Cm zfs list
+on the remote backup server at
+.Ar destination .
+.Pp
+All options and arguments after the
+.Ar destination
+argument are the same as for the
+.Xr zfs 8
+.Cm list
+command.
+.Bl -tag -width "" -compact
+.It Xo
+.Nm \" destroy
+.Cm destroy
+.Ar destination
+.Op Fl Rfnprv
+.Ar filesystem Ns | Ns Ar volume
+.Xc
+.It Xo
+.Nm
+.Cm destroy
+.Ar destination
+.Op Fl Rdnprv
+.Ar filesystem Ns | Ns Ar volume Ns @ Ns Ar snap Ns
+.Oo % Ns Ar snap Ns Oo , Ns Ar snap Ns Oo % Ns Ar snap Oc Oc Oc Ns ...
+.Xc
+.It Xo
+.Nm
+.Cm destroy
+.Ar destination
+.Ar filesystem Ns | Ns Ar volume Ns # Ns Ar bookmark
+.Xc
+This command executes
+.Cm zfs destroy
+on the remote backup server at
+.Ar destination .
+.Pp
+All options and arguments after the
+.Ar destination
+argument are the same as for the
+.Xr zfs 8
+.Cm destroy
+command.
+.It Xo
+.El
+.Bl -tag -width "" -compact
+.Nm \" recover
+.Cm recover
+.Op Fl DLPRbcehnpvw
+.Op Oo Fl I Ns | Ns Fl i Oc Ar snapshot
+.Ar snapshot
+.Xc
+.It Xo
+.Nm
+.Cm recover
+.Op Fl LPcenvw
+.Op Fl i Ar snapshot Ns | Ns Ar bookmark
+.Ar filesystem Ns | Ns Ar volume Ns | Ns Ar snapshot
+.Xc
+.It Xo
+.Nm
+.Cm recover
+.Op Fl Penv
+.Fl t Ar receive_resume_token
+.Xc
+This command executes
+.Cm zfs send
+on the remote backup server at
+.Ar destination
+in order to recover a snapshot from the remote backup server.
+.Pp
+All options and arguments after the
+.Ar destination
+argument are the same as for the
+.Xr zfs 8
+.Cm send
+command.
+.El
+.Ss USER MANAGEMENT AND CONFIGURATION SUBCOMMANDS
+.Bl -tag -width ""
+.It Xo
+.Nm \" configuser
+.Cm configuser
+.Oo Ar username Oc
+.Oo Ar home_dir Oc
+.Xc
+
+.It Xo
+.Nm \" allowsend
+.Cm allowsend
+.Ar filesystem
+.Oo Ar username Oc
+.Xc
+
+.It Xo
+.Nm \" allowreceive
+.Cm allowreceive
+.Ar filesystem
+.Ar key
+.Oo Ar username Oc
+.Xc
+.El
+
+
+
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev AUTOSNAPPROP
+User defined zfs filesystem property name which will exclude the filesystem
+from being included in a 
+.Nm
+.Cm snapshot
+operation when set to false. The default is "io.varasys:auto-snapshot".
+.It Ev AUTOMIRRORPROP
+User defined zfs filesystem property name which will exclude the filesystem
+from being included in a 
+.Nm
+.Cm mirror
+operation when set to false. The default is "io.varasys:auto-mirror".
+.El
+
+.Sh FILES
+The following files are configured with the
+.Nm
+.Cm configuser
+command which creates the system zfsync user, 
+.Pa /etc/zfsync/
+directory,
+.Pa /etc/zfsync.ssh
+symlink, and ssh-keys.
+
+.Ss On both the computer being backed up and the remote backup server
+.Bl -tag -width Ds
+.It Pa /etc/zfsync
+Home directory for the zfsync system user created by
+.Nm Cm configuser .
+.It Pa /etc/zfsync/.ssh
+Symlink to
+.Pa ./
+which allows ssh config files to be located in
+.Pa /etc/zfsync/
+instead of
+.Pa /etc/zfsync/.ssh
+created by
+.Nm Cm configuser .
+.El
+
+.Ss On the computer being backed up:
+.Bl -tag -width Ds
+.It Pa /etc/zfsync/config
+ssh configuration file (only required if additional ssh configuration is
+required to connect to the remote backup server such as custom port or jump
+host).
+.It Pa /etc/zfsync/id_ed25519
+Public ssh key for zfsync user created by
+.Nm Cm configuser .
+.It Pa /etc/zfsync/id_ed25519.pub
+Private ssh key for zfsync user created by
+.Nm Cm configuser .
+.El
+
+.Ss On the remote backup server:
+.Bl -tag -width Ds
+.It Pa /etc/zfsync/authorized_keys
+The authorized_keys file on the remote backup server to allow ssh login from
+the server being backed up.
+This file should have a line containing the following where
+.Ar filesystem
+is the root filesystem under which to store the received filesystems, and
+.Ar key
+is from the
+.Pa /etc/zfsync/id_ed25519.pub
+file on the sending computer.
+This can be configured automatically with the
+.Nm
+.Cm allowreceive
+command.
+
+restrict,command=\(dqzfsync server
+.Ar filesystem
+\(dq ssh-ed25519
+.Ar key
+.El
+
+.Sh EXIT STATUS
+.Ex -std
+
+.Sh EXAMPLES
+The following examples are intended to be shown in the same order they would be
+used when configuring a system the first time. The first set of examples shows
+how to configure on the computer being backed up, and the second set of
+examples shows how to configure the remote backup server.
+
+.Ss On the computer being backed up:
+
+Configure the zfsync system user which will create the zfsync user,
+.Pa /etc/zfsync/
+directory, and ssh keys.
+.Pp
+.Dl $ zfsync configuser
+
+Delegate send permissions to the zfsync user for the filesystem(s) to be backed
+up. Copy the key from the output of this command to be used as input to the
+.Nm
+.Cm allowreceive
+command (see example below).
+.Pp
+.Dl $ zfsync allowsend zpool/home
+
+Exclude a subfilesystem from being included in snapshots.
+.Pp
+.Dl $ zfs set io.varasys:auto-snapshot=false zpool/home/tmp
+
+Create recursive snapshots
+.Pp
+.Dl $ zfsync snapshot -r zpool/home
+
+Mirror filesystem snapshots to remote host (see examples below showing how
+to configure remote host to receive the snapshots). Note that the first time
+you run this you will likely be prompted to verify the authenticity of the
+remote backup server based on its
+.Xr ssh 1
+key fingerprint.
+This requires you to be able to type 'yes' so you should always run the
+.Nm Cm mirror
+command at least once before relying on an automated systemd service or
+chron job.
+.Pp
+.Dl $ zfsync mirror my.backupserver.com -r zpool/home
+
+.Ss On the remote backup server:
+
+Configure the zfsync system user which will create the zfsync user,
+.Pa /etc/zfsync/
+directory, and
+.Pa /etc/zfsync/authorized_keys
+file.
+.Pp
+.Dl $ zfsync configuser
+
+Delegate receive permissions to the zfsync user for the root filesystem
+under which received filesystems will be stored (<key> is from the output of
+the
+.Nm
+.Cm allowsend
+command). This command will automatically configure the
+.Pa /etc/zfsync/authorized_keys
+file.
+.Pp
+.Dl $ zfsync allowreceive <key> zpool/backups
+
+
+
+
+.Sh SEE ALSO
+.Xr ssh 1 ,
+.Xr sshd 8 ,
+.Xr zfs 8 ,
+.Xr zpool 8

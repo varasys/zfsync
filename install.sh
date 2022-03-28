@@ -8,6 +8,7 @@ echo "BINDIR=${BINDIR:="${DESTDIR}${PREFIX}/bin"}"
 echo "DOCDIR=${DOCDIR:="${DESTDIR}${PREFIX}/share/doc"}"
 echo "MANDIR=${MANDIR:="${DESTDIR}${PREFIX}/share/man/man1"}"
 echo "SYSTEMDDIR=${SYSTEMDDIR:="${DESTDIR}/etc/systemd/system"}"
+echo "COMPLETEDIR=${COMPLETEDIR:="${DESTDIR}${PREFIX}/share/bash-completion/completions"}"
 echo
 
 case "${1:-"install"}" in
@@ -15,6 +16,7 @@ case "${1:-"install"}" in
     install -v -d "${BINDIR}"
     install -v -d "${DOCDIR}/zfsync"
     install -v -d "${MANDIR}"
+    install -v -d "${COMPLETEDIR}"
     install -v -m 755 zfsync "${BINDIR}/"
     install -v zfsync.service "${SYSTEMDDIR}/"
     install -v zfsync.timer "${SYSTEMDDIR}/"
@@ -22,6 +24,7 @@ case "${1:-"install"}" in
     install -v README.md "${DOCDIR}/zfsync/"
     install -v install.sh "${DOCDIR}/zfsync/"
     install -v UNLICENSE "${DOCDIR}/zfsync/"
+    install -v -T zfsync-completion.bash "${COMPLETEDIR}/zfsync"
     # install -v zfsync.1 "${MANDIR}/"
     gzip  --to-stdout zfsync.1 > "${MANDIR}/zfsync.1.gz"
     printf '\nfinished installing zfsync\n\nread the man page for configuration and use instructions\n\n'
@@ -32,6 +35,7 @@ case "${1:-"install"}" in
     rm -v "${SYSTEMDDIR}/zfsync.timer"
     rm -v "${MANDIR}/zfsync.1.gz"
     rm -v -rf "${DOCDIR}/zfsync"
+    rm -v "${COMPLETEDIR}/zfsync"
     printf '\nfinished uninstalling zfsync\n\n'
     ;;
 esac

@@ -33,7 +33,6 @@ if [ -z "${BUFFER:-}" ]; then
     BUFFER="cat"
   fi
 fi
-printf 'buffer="%s"' "${BUFFER}" >&2
 
 ERR=0 # error counter (incremented when error function is called)
 trap 'exit $ERR' EXIT # note that the connect function redefines this if it is called

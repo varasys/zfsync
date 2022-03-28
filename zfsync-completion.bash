@@ -13,35 +13,42 @@
 
 _zfsync() {
 	if [ "${COMP_CWORD}" -eq 1 ]; then
-		COMPREPLY=( $(compgen -W "snapshot mirror backup server list destroy recover configuser allowsend allowreceive" -- "$2"))
+		COMPREPLY=( $(compgen -W "-? snapshot mirror backup server list destroy recover configuser allowsend allowreceive version" -- "$2"))
 	else
 		case "${COMP_WORDS[1]}" in
 			'snapshot')
 				if [ "${COMP_CWORD}" -eq 2 ]; then
-					COMPREPLY=( $(compgen -W "-r -d $(zfs list -Ho name)" -- "$2" ) )
+					COMPREPLY=( $(compgen -W "-r -d $(zfs list -Ho name)" -- "$2") )
 				elif [ "${COMP_CWORD}" -eq 3 ] && [ "$3" = "-d" ]; then
 					COMPREPLY=() # need to input an argument for depth
 				else
-					COMPREPLY=( $(compgen -W "$(zfs list -Ho name)" -- "$2" ) )
+					COMPREPLY=( $(compgen -W "$(zfs list -Ho name)" -- "$2") )
 				fi
 				;;
-			'mirror')
-				COMPREPLY=(mirrorarg)
-				;;
-			'backup')
-				COMPREPLY=(backuparg)
+			'mirror'|'backup')
+				if [ "${COMP_CWORD}" -eq 2 ]; then
+					COMPREPLY=( $(compgen -W "localhost $([ -f "$HOME/.ssh/config" ] && grep -P "^Host ([^*]+)$" "$HOME/.ssh/config" | sed 's/Host //')" -- "$2") )
+				elif [ "${COMP_CWORD}" -eq 3 ]; then
+					COMPREPLY=( $(compgen -W "-r -d $(zfs list -Ho name)" -- "$2") )
+				elif [ "${COMP_CWORD}" -eq 4 ] && [ "$3" = "-d" ]; then
+					COMPREPLY=() # need to input an argument for depth
+				else
+					COMPREPLY=( $(compgen -W "$(zfs list -Ho name)" -- "$2") )
+				fi
 				;;
 			'server')
-				COMPREPLY=(serverarg)
+				if [ "${COMP_CWORD}" -eq 2 ]; then
+					COMPREPLY=( $(compgen -W "$(zfs list -Ho name)" -- "$2") )
+				fi
 				;;
 			'list')
-				COMPREPLY=(listarg)
+				COMPREPLY=( $(compgen -W "$(zfs list -Ho name)" -- "$2") )
 				;;
 			'destroy')
-				COMPREPLY=(destroyarg)
+				COMPREPLY=( $(compgen -W "$(zfs list -Ho name)" -- "$2") )
 				;;
 			'recover')
-				COMPREPLY=(recoverarg)
+				COMPREPLY=( $(compgen -W "$(zfs list -Ho name)" -- "$2") )
 				;;
 			'configuser')
 				COMPREPLY=(configuserarg)
@@ -55,3 +62,4 @@ _zfsync() {
 		esac
 	fi
 }
+complete -F _zfsync zfsync

@@ -1,0 +1,11 @@
+[Unit]
+Description=zfsync mirror service
+Requires=zfs-volumes.target
+After=zfs-volumes.target
+ConditionPathExists=/etc/zfsync/mirror.conf
+
+[Service]
+Type=oneshot
+User=zfsync
+EnvironmentFile=/etc/zfsync/mirror.conf
+ExecStart=nice -n 19 ionice -c 3 zfsync mirror $SERVER $DATASETS

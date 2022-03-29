@@ -96,7 +96,7 @@ server over
 The design goals of the script are to be simple to use, not depend on any
 metadata stored in the zfs filesystem itself, be fault tolerant and able to
 resume mirror operations which were interrupted.
-.Pp
+.Ss SUMMARY OF OPERATION
 No configuration is required to use the
 .Nm Cm snapshot
 command, and minimal configuration is required on the remote backup server to
@@ -107,7 +107,7 @@ command.
 The
 .Nm Cm mirror
 subcommand queries the remote backup server for each filesystem to be mirrored
-and creates the the filesystem if it doesn't exist by mirroring the oldest
+and creates the filesystem if it doesn't exist by mirroring the oldest
 available snapshot from the computer being backed up, and then sending all
 intermediary snapshots up until the most recent.
 At the conclusion of each send operation the remote backup server will be
@@ -155,6 +155,45 @@ it on the remote backup server (where the
 .Cm recover
 command runs
 .Cm send ) .
+.Ss SYSTEMD INTEGRATION
+On systems that have
+.Xr systemd 1
+the
+.Em zfsync-snapshot.service ,
+.Em zfsync-mirror.service ,
+and
+.Em zfsync-snapshot.timer
+units are installed in order to automate periodic snapshots and mirror commands.
+.Pp
+The
+.Em zfsync-snapshot.timer
+service will start the
+.Em zfsync-snapshot.service
+unit which will only run if the
+.Pa /etc/zfsync/snapshot.conf
+file exists and defines the
+.Ev DATASETS
+environment variable with the options and datasets to be passed to the
+.Nm Cm snapshot
+command.
+.Pp
+The
+.Em zfsync-mirror.service
+is included as a "Wants" and "After" dependency in the
+.Em zfsync-snapshot.service
+so it will be executed after the snapshots are taken if the
+.Pa /etc/zfsync/mirror.conf
+file exists and defines the
+.Ev DATASETS
+and
+.Ev SERVER
+environment variables with the options and datasets to be passed to the
+.Nm Cm mirror
+command.
+.Pp
+Two separate configuration files are used in order to be able to run one or
+both services; but typically one config file can be a symlink to the other.
+
 .Sh SUBCOMMANDS
 .Bl -tag -width ""
 .It Nm Fl ?
@@ -168,12 +207,12 @@ Displays a help message.
 .Op Fl r Ns | Ns Fl d Ar depth
 .Ar filesystem Ns ...
 .Xc
-Creates snapshot(s), and coresponding bookmark(s) of
+Creates snapshot(s), and corresponding bookmark(s) of
 .Ar filesystem(s) .
 .Pp
 The snapshot/bookmark name(s) will be determined from the
 .Ev SNAPPREFIX
-environment variable concatinated with the date based on
+environment variable concatenated with the date based on
 the command in the
 .Ev DATECMD
 environment variable.
@@ -253,7 +292,7 @@ root as a security measure.
 .Pp
 In order to further enhance security, the "restrict" option should also be
 used in the authorized_keys file to ensure the sender is not able to perform
-malicous activities such as port forwarding, etc.
+malicious activities such as port forwarding, etc.
 .Pp
 .Em DO NOT PUT THIS IN THE
 .Pa /root/.ssh/authorized_keys
@@ -386,7 +425,7 @@ server with root permissions before the
 .Nm Cm allowsend
 or
 .Nm Cm allowreceive
-commandns are user.
+commands are user.
 .It Xo
 .Nm \" allowsend
 .Cm allowsend
@@ -454,20 +493,20 @@ User defined zfs filesystem property name which will exclude the filesystem
 from being included in a 
 .Nm
 .Cm snapshot
-operation when set to false. The default is "io.varasys:auto-snapshot".
+operation when set to false (default:
+.Em com.sun:auto-snapshot ) .
 .It Ev AUTOMIRRORPROP
 User defined zfs filesystem property name which will exclude the filesystem
 from being included in a 
 .Nm
 .Cm mirror
-operation when set to false. The default is "io.varasys:auto-mirror".
+operation when set to false (default:
+.Em com.sun:auto-snapshot ).
 .It Ev SNAPPREFIX
-The prefix applied to snapshot names (default=
-.Ns
+The prefix applied to snapshot names (default:
 .Em zfsync_ ) .
 .It Ev DATECMD
-The command used to generate the date suffix for the snapshot name (default=
-.Ns
+The command used to generate the date suffix for the snapshot name (default:
 .Cm date -u +%F_%H-%M-%S_UTC ) .
 .It Ev BUFFER
 The command to use to buffer I/O on the sending and receiving side. The

@@ -1,9 +1,0 @@
-[Unit]
-Description=timer for zfsync zfs snapshot and backup utility
-
-[Timer]
-Persistent=true
-OnCalendar=*-*-* 00,06,12,18:00:00
-
-[Install]
-WantedBy=timers.target

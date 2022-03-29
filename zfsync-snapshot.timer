@@ -1,0 +1,9 @@
+[Unit]
+Description=timer for zfsync zfs snapshot utility
+
+[Timer]
+Persistent=true
+OnCalendar=*-*-* *:15,45:00
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,5 @@
+# This file provides environment variables for the zfsync-snapshot.service
+# and zfsync-mirror.service.
+
+#DATASETS="-r zpool"
+#SERVER="localhost"

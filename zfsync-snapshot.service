@@ -1,0 +1,14 @@
+[Unit]
+Description=zfsync snapshot service
+Requires=zfs-volumes.target
+After=zfs-volumes.target
+Wants=zfsync-mirror.service
+Before=zfsync-mirror.service
+ConditionPathExists=/etc/zfsync/snapshot.conf
+
+
+[Service]
+Type=oneshot
+User=zfsync
+EnvironmentFile=/etc/zfsync/snapshot.conf
+ExecStart=nice -n 19 ionice -c 3 zfsync snap $DATASETS

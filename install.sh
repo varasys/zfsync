@@ -2,6 +2,12 @@
 set -u
 
 echo "DESTDIR=${DESTDIR:=""}"
+
+if [ -z "${DESTDIR}" ] && [ "$(id -u)" -ne 0 ]; then
+  printf 'restarting as root ...\n' >&2
+  exec sudo -E "$0" "$@"
+fi
+
 echo "PREFIX=${PREFIX:="/usr/local"}"
 
 echo "BINDIR=${BINDIR:="${DESTDIR}${PREFIX}/bin"}"
@@ -29,7 +35,8 @@ case "${1:-"install"}" in
     install -v README.md "${DOCDIR}/"
     install -v install.sh "${DOCDIR}/"
     install -v UNLICENSE "${DOCDIR}/"
-    install -v zfsync.conf.sample "${ETCDIR}/"
+    install -v snapshot.conf.sample "${ETCDIR}/"
+    install -v mirror.conf.sample "${ETCDIR}/"
     install -v -T zfsync-completion.bash "${COMPLETEDIR}/zfsync"
     gzip  --to-stdout zfsync.1 > "${MANDIR}/zfsync.1.gz"
     "${BINDIR}/zfsync" configuser zfsync "${ETCDIR}"
@@ -40,6 +47,7 @@ case "${1:-"install"}" in
     rm -v "${BINDIR}/zfsync"
     rm -v "${MANDIR}/zfsync.1.gz"
     rm -v -rf "${DOCDIR}"
+    rm -v -rf "${ETCDIR}"
     rm -v "${COMPLETEDIR}/zfsync"
     if [ -d "${SYSTEMDDIR}" ]; then
       rm -v "${SYSTEMDDIR}/zfsync-snapshot.service"

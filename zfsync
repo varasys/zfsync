@@ -294,6 +294,64 @@ allowreceive() {
   fi
 }
 
+PRUNEPROP="io.varasys:auto-prune"
+
+prune() {
+  compare() {
+    local ARGS="$1"
+    local CURRENT="$2"
+    local PREV="$3"
+    # shellcheck disable=2086 # don't quote ARGS
+    [ "$(date --date="@${CURRENT}" ${ARGS})" = "$(date --date="@${PREV}" ${ARGS})" ]
+  }
+
+  readonly NOW="$(date --date="${START:-$(date)}" +%s)"
+
+  readonly SECOND=$((1))
+  readonly MINUTE=$((60*SECOND))
+  readonly HOUR=$((60*MINUTE))
+  readonly DAY=$((24*HOUR))
+  readonly WEEK=$((7*DAY))
+  readonly QUARTER=$((13*WEEK))
+  readonly YEAR=$((4*QUARTER))
+  local -A LAST
+  if [ -t 0 ]; then # stdin is not piped, so run zfs command
+    zfs list -t snapshot -Hpo ${PRUNEPROP},creation,name "$@"
+  else # stdin is piped, so pass through input from stdin (for testing)
+    cat
+  fi \
+  | awk -F '\t|@' '$1 == "true" { print $2, $3, $4 }' \
+  | sort -k 2,2r -k 1,1nr \
+  | while read -r CREATION DATASET SNAPSHOT; do
+    local NAME="${DATASET}@${SNAPSHOT}"
+    local KEEP=true
+    if [ "${LAST[DATASET]:-}" = "${DATASET}" ]; then
+      local AGE=$((NOW-CREATION))
+      if [ ${AGE} -lt $((4*HOUR)) ]; then # save everything
+        retain "${DESC} hourly"
+      elif [ ${AGE} -lt $((7*DAY)) ]; then # save last in each hour
+        compare "+%Y-%m-%d_%H" "${CREATION}" "${LAST[CREATION]}" && KEEP=false
+      elif [ ${AGE} -lt $((4*WEEK)) ]; then # save last in each day
+        compare "+%Y-%m-%d" "${CREATION}" "${LAST[CREATION]}" && KEEP=false
+      elif [ ${AGE} -lt $((2*QUARTER)) ]; then # save last in each week
+        compare "+%Y-%U" "${CREATION}" "${LAST[CREATION]}" && KEEP=false
+      elif [ ${AGE} -lt $((6*YEAR)) ]; then # save last in each month
+        compare "+%Y-%m" "${CREATION}" "${LAST[CREATION]}" && KEEP=false
+      elif [ ${AGE} -lt $((10*YEAR)) ]; then # save last in each year
+        compare "+%Y" "${CREATION}" "${LAST[CREATION]}" && KEEP=false
+      fi # save anything over 10 years
+    fi
+    if [ "${KEEP}" = true ]; then
+      printf "\e[1m\e[35mretain %s\e[0m\n" "$NAME" >&2
+    else
+      printf "\e[1m\e[31mprune  %s\e[0m\n" "$NAME" >&2
+    fi
+    LAST[CREATION]=$CREATION
+    LAST[DATASET]=$DATASET
+    LAST[SNAPSHOT]=$SNAPSHOT
+  done
+}
+
 if [ "${1:-}" = '-d' ]; then
   DEBUG=true
   shift
@@ -318,6 +376,10 @@ case "${CMD}" in
     snap "$@"
     connect "${HOST}"
     mirror "$@";;
+  'prune')
+    # help: \nprune: prune old snapshots
+    # help:   zfsync prune [dataset]...
+    prune "$@";;
   'server')
     # help: \nserver: run in server mode on the backup host (from .ssh/authorized_keys file)
     # help:   zfsync server <dataset_root>

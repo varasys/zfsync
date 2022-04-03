@@ -22,10 +22,10 @@ __zfsync() {
 	prev="$3"
 	cur="$2"
 	if [ "${COMP_CWORD}" -eq 1 ]; then
-		COMPREPLY=($(compgen -W "-? snapshot mirror backup server list destroy recover configuser allowsend allowreceive version" -- "$cur"))
+		COMPREPLY=($(compgen -W "-? snapshot mirror backup server list prune rprune destroy recover configuser allowsend allowreceive version" -- "$cur"))
 	else
 		case "${COMP_WORDS[1]}" in
-			'snapshot')
+			'snapshot'|'prune')
 				case "${prev}" in
 					-d)
 						COMPREPLY=($(compgen -W "" -- "$cur"));;
@@ -36,7 +36,7 @@ __zfsync() {
 						;;
 				esac
 				;;
-			'mirror'|'backup')
+			'mirror'|'backup'|'rprune')
 				if [ "${COMP_CWORD}" -eq 2 ]; then
 					COMPREPLY=($(compgen -W "localhost $([ -f "$HOME/.ssh/config" ] && grep -P "^Host ([^*]+)$" "$HOME/.ssh/config" | sed 's/Host //')" -- "$cur"))
 				else

@@ -25,7 +25,7 @@ set -euo pipefail # fast fail on errors, undefined variables, and pipeline error
 
 readonly AUTOSNAPPROP="${AUTOSNAPPROP:-"com.sun:auto-snapshot"}" # dataset user property (set false to exclude dataset from snapshoting and backups)
 readonly AUTOMIRRORPROP="${AUTOMIRRORPROP:-"${AUTOSNAPPROP}"}"
-readonly AUTOPRUNEPROP="${AUTOPRUNEPROP:-"${AUTOSNAPPROP}"}"
+# readonly AUTOPRUNEPROP="${AUTOPRUNEPROP:-"${AUTOSNAPPROP}"}"
 readonly SNAPPREFIX="${SNAPPREFIX:-"zfsync_"}" # prefix for snapshot name
 readonly DATECMD="${DATECMD:-"date -u +%F_%H-%M-%S_UTC"}" # command to generate snapshot name timestamp
 if [ -z "${BUFFER:-}" ]; then
@@ -229,7 +229,7 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
     'receive')
       prepare ":Penvt:Fhsuo:x:dA" "$@"
       ${BUFFER} | $ZFS receive "${ARGS[@]}"
-      SSH_ORIGINAL_COMMAND="status ${*[-1]}" server "${TARGET}";;
+      SSH_ORIGINAL_COMMAND="status ${*: -1}" server "${TARGET}";;
     'list')
       prepare ":rd:Hpo:t:s:S:" "$@"
       $ZFS list "${ARGS[@]}";;
@@ -238,7 +238,6 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
       $ZFS send "${ARGS[@]}";;
     'destroy')
       prepare ":Rdfnprv" "$@"
-      set -x
       $ZFS destroy "${ARGS[@]}";;
     'prune')
       prepare ":rd:" "$@"
@@ -342,15 +341,15 @@ prune() {
   if [ "${1:-}" = '-n' ]; then # do a dry run
     local -r DESTROY=":"; shift
   else
-    local -r DESTROY="$ZFS destroy "
+    local -r DESTROY="$ZFS destroy"
   fi
 
   compare() {
-    local -r ARGS="$1"
+    local -r FORMAT="$1"
     local -r CURRENT="$2"
     local -r PREV="$3"
     # shellcheck disable=2086 # don't quote ARGS
-    [ "$(date --date="@${CURRENT}" ${ARGS})" = "$(date --date="@${PREV}" ${ARGS})" ]
+    [ "$(date --date="@${CURRENT}" ${FORMAT})" = "$(date --date="@${PREV}" ${FORMAT})" ]
   }
 
   local -r NOW="$(date --date="${START:-$(date)}" +%s)" # START is used for debugging
@@ -391,13 +390,15 @@ prune() {
     fi
     PREV=( [CREATION]="$CREATION" [DATASET]="$DATASET" [SNAPSHOT]="$SNAPSHOT" )
   done < <( # need this to be in a subshell so the while loop can increment ERR
-    if [ -t 0 ]; then # stdin is not piped, so run zfs command
-      $ZFS list -t snapshot -Hpo "${AUTOPRUNEPROP},creation,name" "$@"
-    else # stdin is piped, so pass through input from stdin
-      cat # but note there is no error handling for bad input
-    fi \
-    | awk -F '\t|@' '$1 == "true" { print $2, $3, $4 }' \
-    | sort -k 2,2r -k 1,1nr
+    # if [ -t 0 ]; then # stdin is not piped, so run zfs command
+    #   $ZFS list -t snapshot -Hpo "${AUTOPRUNEPROP},creation,name" "$@"
+    # else # stdin is piped, so pass through input from stdin
+    #   cat # but note there is no error handling for bad input
+    # fi \
+    # | awk -F '\t|@' '$1 == "true" { print $2, $3, $4 }' \
+    $ZFS list -t snapshot -Hpo creation,name "$@" \
+      | awk -F '\t|@' '{ print $1, $2, $3 }' \
+      | sort -k 2,2r -k 1,1nr
   )
 }
 
@@ -427,11 +428,11 @@ case "${CMD}" in
     mirror "$@";;
   'prune')
     # help: \nprune: prune old snapshots
-    # help:   zfsync prune [dataset]...
+    # help:   zfsync prune [-r|-d depth] [dataset]...
     prune "$@";;
   'rprune')
     # help: \nrprune: prune old snapshots on remote backup server
-    # help:   zfsync rprune destination [dataset]...
+    # help:   zfsync rprune destination [-r|-d depth] [dataset]...
     HOST="${1:?"missing hostname argument"}"; shift
     connect "${HOST}"
     $RPC prune "$@";;

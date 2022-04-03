@@ -1,0 +1,11 @@
+[Unit]
+Description=zfsync prune service
+Requires=zfs-volumes.target
+After=zfs-volumes.target
+ConditionPathExists=/etc/zfsync/prune.conf
+
+[Service]
+Type=oneshot
+User=zfsync
+EnvironmentFile=/etc/zfsync/prune.conf
+ExecStart=nice -n 19 ionice -c 3 zfsync prune $DATASETS

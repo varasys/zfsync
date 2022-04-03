@@ -24,6 +24,12 @@
 .Ar destination
 .Op Fl r Ns | Ns Fl d Ar depth
 .Ar filesystem Ns | Ns Ar volume Ns ...
+.Nm \" prune subcommand
+.Cm prune
+.Op Fl n
+.Op Fl h Ar destination
+.Op Fl r Ns | Ns Fl d Ar depth
+.Oo Ar filesystem Ns | Ns Ar volume Ns Oc Ns ...
 .Nm \" server subcommand
 .Cm server
 .Ar filesystem_root
@@ -273,7 +279,48 @@ command followed by
 .Nm
 .Cm mirror
 command with the same flags and options that apply to those subcommands.
+.It Xo
+.Nm \" prune subcommand
+.Cm prune
+.Op Fl n
+.Op Fl h Ar destination
+.Op Fl r Ns | Ns Fl d Ar depth
+.Oo Ar filesystem Ns | Ns Ar volume Ns Oc Ns ...
+.Xc
+Prunes snapshots according to the following retention schedule to ensure there
+are no more than one per:
+.Bl -bullet -offset indent -compact
+.It
+every 15 min for the past four hours
+.It
+every 1 hour for the past seven days
+.It
+every 1 day for the past four weeks
+.It
+every 1 week for the past six months
+.It
+every 1 month for the past six years
+.It
+every 1 year for the past ten years
 .El
+Use the
+.Fl n
+flag to perform a dry-run and only show what would be pruned.
+Use the
+.Fl h Ar hostname
+option to prune a remote server (ie. a server previously mirrored with the
+.Nm .Cm mirror
+command).
+The
+.Fl r
+and
+.Fl -h Ar depth
+options are the same as for the
+.Nm
+.Cm snapshot
+command.
+.El
+
 .Ss REMOTE BACKUP SERVER COMMAND
 .Bl -tag -width ""
 .It Xo

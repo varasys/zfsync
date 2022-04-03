@@ -14,30 +14,31 @@ readonly VERSION="0.0.1"
 # [ ] TODO implement pre/post snap and mirror hooks
 # [ ] TODO implement localhost mirroring (without ssh)
 # [ ] TODO implement creating dummy datasets on backup server for broken chains (probably not; let the user do this manually??)
-# [*] TODO implement pruning (maybe; consider this may be best for seperate script; or may be best for this script to prune on remote also)
-# [*] TODO seperate snap and mirror into two seperate systemd services
-# [*] TODO add quota option to `zfsync allowreceive`
-# [*] TODO update sync logic to check for new latest snapshot after each send
-# [*] TODO config zfsync user (as sender and receiver)
+# [x] TODO implement pruning (maybe; consider this may be best for seperate script; or may be best for this script to prune on remote also)
+# [x] TODO seperate snap and mirror into two seperate systemd services
+# [x] TODO add quota option to `zfsync allowreceive`
+# [x] TODO update sync logic to check for new latest snapshot after each send
+# [x] TODO config zfsync user (as sender and receiver)
 
 set -euo pipefail # fast fail on errors, undefined variables, and pipeline errors
 
+
 readonly AUTOSNAPPROP="${AUTOSNAPPROP:-"com.sun:auto-snapshot"}" # dataset user property (set false to exclude dataset from snapshoting and backups)
 readonly AUTOMIRRORPROP="${AUTOMIRRORPROP:-"${AUTOSNAPPROP}"}"
+readonly AUTOPRUNEPROP="${AUTOPRUNEPROP:-"${AUTOSNAPPROP}"}"
 readonly SNAPPREFIX="${SNAPPREFIX:-"zfsync_"}" # prefix for snapshot name
 readonly DATECMD="${DATECMD:-"date -u +%F_%H-%M-%S_UTC"}" # command to generate snapshot name timestamp
 if [ -z "${BUFFER:-}" ]; then
   if command -v mbuffer >/dev/null; then
     readonly BUFFER="$(command -v mbuffer) -s 128k -q"
   else
-    readonly BUFFER="cat"
+    warn 'mbuffer not found'
+    readonly BUFFER="$(command -v cat)"
   fi
 fi
 
 ERR=0 # error counter (incremented when error function is called)
 trap 'exit $ERR' EXIT # note that the connect function redefines this if it is called
-
-readonly ZFS="$(command -v zfs)"
 
 log() {
   local -r MSG="$1"; shift
@@ -74,6 +75,9 @@ fatal() {
   exit $ERR
 }
 
+readonly ZFS="$(command -v zfs)"
+[ -n "${ZFS}" ] || fatal 'fatal error: zfs command not found'
+
 snapshot() {
   local -r SNAPSHOT="${SNAPPREFIX}$(${DATECMD})"
   #shellcheck disable=2207 # do not quote process substitution
@@ -94,13 +98,14 @@ connect() {
   if [ -z "${RPC:-}" ]; then # don't reconnect if $RPC is already defined
     local -r HOST="$1"
     local -r SSH="$(command -v ssh)"
+    [ -n "${SSH}" ] || fatal 'fatal error: ssh command not found'
     local -r SOCKET="${HOME}/.ssh/zfsync_${HOST}_$(date +%s%N)"
-    log 'connecting to ssh host: %s ...' "${HOST}"
+    # log 'connecting to ssh host: %s ...' "${HOST}"
     ${SSH} -fMN -S "${SOCKET}" "${HOST}"
     # shellcheck disable=2064 # expand HOST and SOCKET at definition time
     trap "
-      log 'disconnecting from ssh host: %s ...' '${HOST}'
-      ${SSH} -S '${SOCKET}' -O exit '${HOST}'
+      # log 'disconnecting from ssh host: %s ...' '${HOST}'
+      ${SSH} -S '${SOCKET}' -O exit '${HOST}' 2>/dev/null
       exit \$ERR
     " EXIT
     readonly RPC=$(printf '%s -o ControlMaster=no -S %s %s' "${SSH}" "${SOCKET}" "${HOST}")
@@ -136,17 +141,21 @@ update_remote() {
 }
 
 mirror() {
-  DATASETS="$($ZFS list -Ho "name,${AUTOMIRRORPROP}" -s name "$@" \
-    | awk '{ if ($2 != "false") print $1 }' | uniq)"
-  for DATASET in ${DATASETS}; do
-    ( # operate in a subshell so fatel error won't exit script
+  # shellcheck disable=2207 # don't quote process substitution
+  local -ar DATASETS=( $($ZFS list -Ho "name,${AUTOMIRRORPROP}" -s name "$@" \
+    | awk '{ if ($2 != "false") print $1 }' | uniq) )
+  local DATASET
+  for DATASET in "${DATASETS[@]}"; do
+    ( # operate in a subshell so fatel error will continue loop instead of exiting script
       log '\nmirroring %s ...' "${DATASET}"
+      local STATUS
       STATUS="$($RPC status "${DATASET}")"
       until
         debug 'remote STATUS: %s' "$STATUS"
+        local GUID
         GUID="$($ZFS list -t snap -Ho guid -S creation "${DATASET}" | head -n 1)" || fatal 'error querying guid for %s' "${DATASET}"
         debug 'local GUID: %s' "$GUID"
-        [ -z "${GUID}" ] && error "error mirroring %s - no existing snapshots" "${DATASET}" && continue
+        [ -n "${GUID}" ] || fatal "error mirroring %s - no existing snapshots" "${DATASET}"
         [ "${GUID}" = "${STATUS#guid=}" ] && debug 'complete: %s synced to GUID=%s' "${DATASET}" "${GUID}"
       do
         case "${STATUS}" in
@@ -169,16 +178,42 @@ mirror() {
 }
 
 server() { # run from authorized_keys file on the backup server (ie. command="zfsync receive zpool/backups")
-  TARGET="$1" # the dataset path prefix including pool name (ie. zpool/backups)
+  local -a ARGS=( )
+  local -r TARGET="$1" # the dataset path prefix including pool name (ie. zpool/backups)
+  prepare() { # function to add local dataset prefix to datasets
+    local -r OPTSTRING="$1" # getopts optstring of allowable flags (ie. ":rd:Ho:t:s:S:")
+    shift
+    ARGS=( "$@" )
+    local OPTIND=1
+    local OPT
+    # the main reason to run getopts is to determine when the options end
+    # in order to prefix all of the datasets with the TARGET prefix
+    while getopts "${OPTSTRING}" OPT "${ARGS[@]}"; do
+      case "${OPT}" in
+        \?) fatal 'Invalid option: -%s' "${OPTARG}";;
+        :) fatal 'Option -%s requires an argument' "${OPTARG}";;
+      esac
+    done
+    # now that all options have been parsed, everything else must be prefixed
+    if [ ${OPTIND} -gt $# ]; then
+      ARGS+=( "${TARGET}" ) # no dataset was provided, so add TARGET as the dataset
+    else # add TARGET prefix to everything after the options
+      while [ ${OPTIND} -le $# ]; do
+        ARGS[OPTIND-1]="${TARGET}/${ARGS[OPTIND-1]}"
+        ((OPTIND++))
+      done
+    fi
+  }
   # shellcheck disable=2086 # use word splitting below
-  set -- $SSH_ORIGINAL_COMMAND
-  SUBCMD="$1"; shift
+  set -- ${SSH_ORIGINAL_COMMAND}
+  local -r SUBCMD="$1"; shift
   case "${SUBCMD}" in
-    status)
-      SOURCE="$1"
+    'status')
+      local -r SOURCE="$1"
+      local TOKEN
       TOKEN="$($ZFS list -Ho receive_resume_token "${TARGET}/${SOURCE}" 2>/dev/null)"
       if [ "${TOKEN}" = "-" ]; then # dataset exists so check for guid
-        GUID="$($ZFS list -t snapshot -Ho guid -S creation "${TARGET}/${SOURCE}" | head -n 1)"
+        local -r GUID="$($ZFS list -t snapshot -Ho guid -S creation "${TARGET}/${SOURCE}" | head -n 1)"
         if [ -n "${GUID}" ]; then
           TOKEN="guid=${GUID}" # respond with the guid
         else
@@ -191,27 +226,23 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
       fi
       printf '%s' "${TOKEN}"
       ;;
-    receive)
-      ARGS="$*"
-      OPTIONS="${ARGS% *}"
-      DATASET="${ARGS##* }"
-      [ "${OPTIONS}" != "${DATASET}" ] || OPTIONS=""
-      # [ -n "${PRERECEIVEHOOK}" ] && { ${PRERECEIVEHOOK} "${TARGET}" || true; } # run pre-receive hook if defined
-      # shellcheck disable=2086 # don't quote OPTIONS
-      ${BUFFER} | $ZFS receive ${OPTIONS} "${TARGET}/${DATASET}"
-      # [ -n "${POSTRECEIVEHOOK}" ] && { ${POSTRECEIVEHOOK} "${TARGET}" || true; } # run post-receive hook if defined
-      TOKEN="$(SSH_ORIGINAL_COMMAND="status ${DATASET}" server "${TARGET}")"
-      debug 'post receive token: %s' "${TOKEN}"
-      printf '%s' "${TOKEN}"
-      ;;
-    send|list|destroy)
-      ARGS="$*"
-      OPTIONS="${ARGS% *}"
-      DATASET="${ARGS##* }"
-      [ "${OPTIONS}" != "${DATASET}" ] || OPTIONS=""
-      # shellcheck disable=2086 # don't quote OPTIONS
-      $ZFS "${SUBCMD}" ${OPTIONS} "${TARGET}/${DATASET}"
-      ;;
+    'receive')
+      prepare ":Penvt:Fhsuo:x:dA" "$@"
+      ${BUFFER} | $ZFS receive "${ARGS[@]}"
+      SSH_ORIGINAL_COMMAND="status ${*[-1]}" server "${TARGET}";;
+    'list')
+      prepare ":rd:Hpo:t:s:S:" "$@"
+      $ZFS list "${ARGS[@]}";;
+    'send')
+      prepare ":DLPRbcehnpvwi:I:" "$@"
+      $ZFS send "${ARGS[@]}";;
+    'destroy')
+      prepare ":Rdfnprv" "$@"
+      set -x
+      $ZFS destroy "${ARGS[@]}";;
+    'prune')
+      prepare ":rd:" "$@"
+      prune "${ARGS[@]}";;
     *)
       #shellcheck disable=2016 # don't expand %s below
       fatal 'fatal error: unknown command `%s`\n' "$SSH_ORIGINAL_COMMAND"
@@ -220,8 +251,8 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
 }
 
 configuser() {
-  USER="${1:-"zfsync"}"
-  HOMEDIR="${2:-"${HOMEDIR:-"/etc/zfsync"}"}"
+  local -r USER="${1:-"zfsync"}"
+  local -r HOMEDIR="${2:-"/usr/local/share/zfsync"}"
   if id "${USER}" >/dev/null 2>&1; then
     warn 'user %s already exists' "${USER}"
   else
@@ -233,13 +264,14 @@ configuser() {
     warn 'home directory %s already exists' "${HOMEDIR}"
   else
     mkdir -p "${HOMEDIR}"
+    chown "${USER}:${USER}" "${HOMEDIR}"
     log 'home directory %s created' "${HOMEDIR}"
   fi
-  chown "${USER}:${USER}" "${HOMEDIR}"
-  [ -d "${HOMEDIR}/.ssh" ] || ln -s "./" "${HOMEDIR}/.ssh"
+  [ -L "${HOMEDIR}/ssh" ] || ln -s ".ssh" "${HOMEDIR}/ssh"
   if [ -f "${HOMEDIR}/.ssh/id_ed25519" ]; then
     warn 'ssh key %s already exists' "${HOMEDIR}/.ssh/id_ed25519"
   else
+    su -c "mkdir -p -m 700 '${HOMEDIR}/.ssh'" - "${USER}"
     su -c "ssh-keygen -f '${HOMEDIR}/.ssh/id_ed25519' -t ed25519 -N ''" - "${USER}"
     log 'ssh key %s created' "${HOMEDIR}/.ssh/id_ed25519"
   fi
@@ -253,14 +285,17 @@ restart_as_root() {
 }
 
 allowsend() {
-  DATASET="$1"
-  USER="${2:-"zfsync"}"
-  PERMS="send,snapshot,bookmark,hold"
+  local -r DATASET="${1:?"missing dataset argument"}"
+  local -r USER="${2:-"zfsync"}"
+  # shellcheck disable=2016 # don't expand command below
+  id "${USER}" >/dev/null 2>&1 \
+    || fatal 'user %s does not exist - consider running `%s configuser %s`' "${USER}" "$(basename "$0")"
+  local -r PERMS="send,snapshot,bookmark,hold"
   log "granting '%s' permissions to '%s' on dataset '%s'" "${PERMS}" "${USER}" "${DATASET}"
   $ZFS allow "${USER}" "${PERMS}" "${DATASET}"
   $ZFS allow "${DATASET}"
   # shellcheck disable=2016 # don't expand command below
-  HOMEDIR="$(su -c 'echo "$HOME"' - "${USER}")"
+  local -r HOMEDIR="$(su -c 'echo "$HOME"' - "${USER}")"
   if [ -f "${HOMEDIR}/.ssh/id_ed25519.pub" ]; then
     # shellcheck disable=2016 # don't execute command below
     warn 'use the following key with the `zfs allowreceive` command on the remote backup server:'
@@ -271,11 +306,14 @@ allowsend() {
 }
 
 allowreceive() {
-  DATASET="${1:?"missing dataset argument"}"
-  KEY="${2:?"missing ssh public key argument"}"
-  QUOTA="${3:-"none"}"
-  USER="${4:-"zfsync"}"
-  PERMS='receive,mount,create,userprop,encryption,canmount,mountpoint,compression,destroy,send,bookmark,keylocation'
+  local -r DATASET="${1:?"missing dataset argument"}"
+  local -r KEY="${2:?"missing ssh public key argument"}"
+  local -r QUOTA="${3:-"none"}"
+  local -r USER="${4:-"zfsync"}"
+  # shellcheck disable=2016 # don't expand command below
+  id "${USER}" >/dev/null 2>&1 \
+    || fatal 'user %s does not exist - consider running `%s configuser %s`' "${USER}" "$(basename "$0")"
+  local -r PERMS='receive,mount,create,userprop,encryption,canmount,mountpoint,compression,destroy,send,bookmark,keylocation'
   if ! $ZFS list "${DATASET}" >/dev/null 2>&1; then
     warn 'creating dataset %s' "${DATASET}"
     $ZFS create -o mountpoint=none -p "${DATASET}"
@@ -285,9 +323,9 @@ allowreceive() {
   $ZFS allow "${DATASET}"
   log "setting quota='%s' on dataset '%s'" "${QUOTA}" "${DATASET}"
   $ZFS set quota="${QUOTA}" "${DATASET}"
-  AUTHCMD="restrict,command=\"zfsync server ${DATASET}\" ${KEY}"
+  local -r AUTHCMD="restrict,command=\"zfsync server ${DATASET}\" ${KEY}"
   # shellcheck disable=2016 # don't expand $HOME below
-  HOMEDIR="$(su -c 'echo "$HOME"' - "${USER}")"
+  local -r HOMEDIR="$(su -c 'echo "$HOME"' - "${USER}")"
   if grep -q "${AUTHCMD}" "${HOMEDIR}/.ssh/authorized_keys" 2>/dev/null; then
     log 'authorized_keys file already contains the specified key'
   elif grep "${KEY}" "${HOMEDIR}/.ssh/authorized_keys" 2>/dev/null; then
@@ -300,69 +338,74 @@ allowreceive() {
   fi
 }
 
-PRUNEPROP="io.varasys:auto-prune"
-
 prune() {
+  if [ "${1:-}" = '-n' ]; then # do a dry run
+    local -r DESTROY=":"; shift
+  else
+    local -r DESTROY="$ZFS destroy "
+  fi
+
   compare() {
-    local ARGS="$1"
-    local CURRENT="$2"
-    local PREV="$3"
+    local -r ARGS="$1"
+    local -r CURRENT="$2"
+    local -r PREV="$3"
     # shellcheck disable=2086 # don't quote ARGS
     [ "$(date --date="@${CURRENT}" ${ARGS})" = "$(date --date="@${PREV}" ${ARGS})" ]
   }
 
-  readonly NOW="$(date --date="${START:-$(date)}" +%s)"
-
-  readonly SECOND=$((1))
-  readonly MINUTE=$((60*SECOND))
-  readonly HOUR=$((60*MINUTE))
-  readonly DAY=$((24*HOUR))
-  readonly WEEK=$((7*DAY))
-  readonly QUARTER=$((13*WEEK))
-  readonly YEAR=$((4*QUARTER))
-  local -A LAST
-  if [ -t 0 ]; then # stdin is not piped, so run zfs command
-    $ZFS list -t snapshot -Hpo ${PRUNEPROP},creation,name "$@"
-  else # stdin is piped, so pass through input from stdin (for testing)
-    cat
-  fi \
-  | awk -F '\t|@' '$1 == "true" { print $2, $3, $4 }' \
-  | sort -k 2,2r -k 1,1nr \
-  | while read -r CREATION DATASET SNAPSHOT; do
+  local -r NOW="$(date --date="${START:-$(date)}" +%s)" # START is used for debugging
+  # time durations                # backup frequency buckets
+  local -r SECOND=$((1))          # (ie. save hourly snapshots for 7 days)
+  local -r MINUTE=$((60*SECOND))  # (ie. save daily snapshots for 4 weeks)
+  local -r HOUR=$((60*MINUTE));   local -r FREQUENT=$((4*HOUR))
+  local -r DAY=$((24*HOUR));      local -r HOURLY=$((7*DAY))
+  local -r WEEK=$((7*DAY));       local -r DAILY=$((4*WEEK))
+  local -r QUARTER=$((13*WEEK));  local -r WEEKLY=$((2*QUARTER))
+  local -r YEAR=$((4*QUARTER));   local -r MONTHLY=$((6*YEAR))
+                                  local -r YEARLY=$((10*YEAR))
+  local -A PREV
+  while read -r CREATION DATASET SNAPSHOT; do
     local NAME="${DATASET}@${SNAPSHOT}"
-    local KEEP=true
-    if [ "${LAST[DATASET]:-}" = "${DATASET}" ]; then
+    local PRUNE=false
+    if [ "${PREV[DATASET]:-}" = "${DATASET}" ]; then
       local AGE=$((NOW-CREATION))
-      if [ ${AGE} -lt $((4*HOUR)) ]; then # save everything
-        retain "${DESC} hourly"
-      elif [ ${AGE} -lt $((7*DAY)) ]; then # save last in each hour
-        compare "+%Y-%m-%d_%H" "${CREATION}" "${LAST[CREATION]}" && KEEP=false
-      elif [ ${AGE} -lt $((4*WEEK)) ]; then # save last in each day
-        compare "+%Y-%m-%d" "${CREATION}" "${LAST[CREATION]}" && KEEP=false
-      elif [ ${AGE} -lt $((2*QUARTER)) ]; then # save last in each week
-        compare "+%Y-%U" "${CREATION}" "${LAST[CREATION]}" && KEEP=false
-      elif [ ${AGE} -lt $((6*YEAR)) ]; then # save last in each month
-        compare "+%Y-%m" "${CREATION}" "${LAST[CREATION]}" && KEEP=false
-      elif [ ${AGE} -lt $((10*YEAR)) ]; then # save last in each year
-        compare "+%Y" "${CREATION}" "${LAST[CREATION]}" && KEEP=false
-      fi # save anything over 10 years
+      if [ ${AGE} -lt ${FREQUENT} ]; then # save everything
+        : # keep everything
+      elif [ ${AGE} -lt ${HOURLY} ]; then # save last in each hour
+        compare "+%Y-%m-%d_%H" "${CREATION}" "${PREV[CREATION]}" && PRUNE=true
+      elif [ ${AGE} -lt ${DAILY} ]; then # save last in each day
+        compare "+%Y-%m-%d" "${CREATION}" "${PREV[CREATION]}" && PRUNE=true
+      elif [ ${AGE} -lt ${WEEKLY} ]; then # save last in each week
+        compare "+%Y-%U" "${CREATION}" "${PREV[CREATION]}" && PRUNE=true
+      elif [ ${AGE} -lt ${MONTHLY} ]; then # save last in each month
+        compare "+%Y-%m" "${CREATION}" "${PREV[CREATION]}" && PRUNE=true
+      elif [ ${AGE} -lt ${YEARLY} ]; then # save last in each year
+        compare "+%Y" "${CREATION}" "${PREV[CREATION]}" && PRUNE=true
+      fi # then save everything over 10 years
     fi
-    if [ "${KEEP}" = true ]; then
-      printf "\e[1m\e[35mretain %s\e[0m\n" "$NAME" >&2
+    if [ "${PRUNE}" = true ]; then
+      warn 'pruning   %s' "${NAME}"
+      $DESTROY "${NAME}" || ERR=$((ERR+1))
     else
-      printf "\e[1m\e[31mprune  %s\e[0m\n" "$NAME" >&2
+      log 'retaining %s' "${NAME}"
     fi
-    LAST[CREATION]=$CREATION
-    LAST[DATASET]=$DATASET
-    LAST[SNAPSHOT]=$SNAPSHOT
-  done
+    PREV=( [CREATION]="$CREATION" [DATASET]="$DATASET" [SNAPSHOT]="$SNAPSHOT" )
+  done < <( # need this to be in a subshell so the while loop can increment ERR
+    if [ -t 0 ]; then # stdin is not piped, so run zfs command
+      $ZFS list -t snapshot -Hpo "${AUTOPRUNEPROP},creation,name" "$@"
+    else # stdin is piped, so pass through input from stdin
+      cat # but note there is no error handling for bad input
+    fi \
+    | awk -F '\t|@' '$1 == "true" { print $2, $3, $4 }' \
+    | sort -k 2,2r -k 1,1nr
+  )
 }
 
 if [ "${1:-}" = '-d' ]; then
   DEBUG=true
   shift
 fi
-CMD="${1:-}"
+readonly CMD="${1:-}"
 [ $# -gt 0 ] && shift
 case "${CMD}" in
   'snap'|'snapshot')
@@ -386,6 +429,12 @@ case "${CMD}" in
     # help: \nprune: prune old snapshots
     # help:   zfsync prune [dataset]...
     prune "$@";;
+  'rprune')
+    # help: \nrprune: prune old snapshots on remote backup server
+    # help:   zfsync rprune destination [dataset]...
+    HOST="${1:?"missing hostname argument"}"; shift
+    connect "${HOST}"
+    $RPC prune "$@";;
   'server')
     # help: \nserver: run in server mode on the backup host (from .ssh/authorized_keys file)
     # help:   zfsync server <dataset_root>

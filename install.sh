@@ -29,6 +29,7 @@ case "${1:-"install"}" in
     if [ -d "${SYSTEMDDIR}" ]; then
       install -v zfsync-snapshot.service "${SYSTEMDDIR}/"
       install -v zfsync-mirror.service "${SYSTEMDDIR}/"
+      install -v zfsync-prune.service "${SYSTEMDDIR}/"
       install -v zfsync-snapshot.timer "${SYSTEMDDIR}/"
     fi
     install -v inittest.sh "${DOCDIR}/"
@@ -36,7 +37,6 @@ case "${1:-"install"}" in
     install -v install.sh "${DOCDIR}/"
     install -v UNLICENSE "${DOCDIR}/"
     install -v snapshot.conf.sample "${ETCDIR}/"
-    install -v mirror.conf.sample "${ETCDIR}/"
     install -v -T zfsync-completion.bash "${COMPLETEDIR}/zfsync"
     gzip  --to-stdout zfsync.1 > "${MANDIR}/zfsync.1.gz"
     "${BINDIR}/zfsync" configuser zfsync "${ETCDIR}"

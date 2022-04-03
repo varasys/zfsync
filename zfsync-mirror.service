@@ -2,6 +2,8 @@
 Description=zfsync mirror service
 Requires=zfs-volumes.target
 After=zfs-volumes.target
+Wants=zfsync-prune.service
+Before=zfsync-prune.service
 ConditionPathExists=/etc/zfsync/mirror.conf
 
 [Service]

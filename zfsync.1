@@ -26,8 +26,13 @@
 .Ar filesystem Ns | Ns Ar volume Ns ...
 .Nm \" prune subcommand
 .Cm prune
-.Op Fl n
-.Op Fl h Ar destination
+.Op Fl f
+.Op Fl r Ns | Ns Fl d Ar depth
+.Oo Ar filesystem Ns | Ns Ar volume Ns Oc Ns ...
+.Nm \" rprune subcommand
+.Cm rprune
+.Ar destination
+.Op Fl f
 .Op Fl r Ns | Ns Fl d Ar depth
 .Oo Ar filesystem Ns | Ns Ar volume Ns Oc Ns ...
 .Nm \" server subcommand
@@ -102,6 +107,17 @@ server over
 The design goals of the script are to be simple to use, not depend on any
 metadata stored in the zfs filesystem itself, be fault tolerant and able to
 resume mirror operations which were interrupted.
+.Pp
+The best way to explain the term "marginally trusted" is to consider the
+original design criteria which was to allow me and my brother living in
+different states in the US to backup our data to each other in a way that
+allowed a predictable limit to the amount of data backed up (ie. quotas), and
+ensured that we could not access each others data (ie. we don't have each
+others encryption keys). So marginally trusted can be considered to mean
+"not malicous" and willing to allow ssh access to a specific command using
+the
+.Xr ssh 1
+authorized_keys mechanism.
 .Ss SUMMARY OF OPERATION
 No configuration is required to use the
 .Nm Cm snapshot
@@ -121,6 +137,14 @@ queried again and the process repeated until the guid of the most recent
 snapshots on both the computer being backed up and the remote backup server are
 the same, meaning the remote backup server has the latest snapshot that exists
 on the computer being backed up.
+.Pp
+Since the
+.Nm Cm mirror
+command queries for the latest snapshot after it completes each send it will
+always make sure to send the latest available snapshot even if additional
+snapshots were created since the
+.Nm Cm mirror
+command started.
 .Pp
 All snapshots are sent raw (ie. with the
 .Fl w
@@ -282,8 +306,7 @@ command with the same flags and options that apply to those subcommands.
 .It Xo
 .Nm \" prune subcommand
 .Cm prune
-.Op Fl n
-.Op Fl h Ar destination
+.Op Fl f
 .Op Fl r Ns | Ns Fl d Ar depth
 .Oo Ar filesystem Ns | Ns Ar volume Ns Oc Ns ...
 .Xc
@@ -303,25 +326,26 @@ every 1 month for the past six years
 .It
 every 1 year for the past ten years
 .El
+Since this command is destructive, it requires the use of the
+.Fl f
+flag to actually destroy snapshots.
+Otherwise it outputs to stdout the snapshots that would be destroyed (ie. so
+you could pipe them to
+.Xr xargs 1
+for further processing for example), and to
+stderr (ie. for information) the snapshots that would be retained.
 Use the
-.Fl n
-flag to perform a dry-run and only show what would be pruned.
-Use the
-.Fl h Ar hostname
-option to prune a remote server (ie. a server previously mirrored with the
-.Nm .Cm mirror
-command).
 The
 .Fl r
 and
-.Fl -h Ar depth
+.Fl -d Ar depth
 options are the same as for the
 .Nm
 .Cm snapshot
 command.
 .El
 
-.Ss REMOTE BACKUP SERVER COMMAND
+.Ss REMOTE BACKUP SERVER COMMANDS
 .Bl -tag -width ""
 .It Xo
 .Nm \" server command
@@ -516,6 +540,19 @@ command).
 .Ar quota
 argument may be provided to apply a quota to the
 .Ar filesystem .
+.It Xo
+.Nm \" rprune subcommand
+.Cm rprune
+.Ar destination
+.Op Fl f
+.Op Fl r Ns | Ns Fl d Ar depth
+.Oo Ar filesystem Ns | Ns Ar volume Ns Oc Ns ...
+.Xc
+This command prunes snapshots on the remote backup server and other than the
+.Ar destination
+argument has the same options as the
+.Cm prune
+command described above.
 .El
 
 

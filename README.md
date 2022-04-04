@@ -54,6 +54,10 @@ The backup command is just a convenience function to run `zfs snap` and then `zf
 
 This command is meant to be run from the 'authorized_keys' file on the backup server (see authorized_keys in sshd manpage). This allows the computer being backed up to connect with `ssh` and query, send, receive, or destroy any dataset below \<dataset_root\>.
 
+**zfsync prune** [**-r**|**-d** *depth*] *\<dataset\>* ...
+
+Prune old snapshots. Refer to the manpage for the retention schedule. The **-r** and **-d** arguments have the same meaning as the **zfsync snap** command.
+
 ### Interacting with the remote backup server
 
 The following commands just forward standard zfs commands to the remote server. `zfsync` is specifically designed to backup encrypted datasets on marginally trusted third party servers, and there is no expectation that the person performing the backup has any access to the remote backup server other than through these commands. These commands should be secure because the remote backup server is configured to run from the authorized_keys file on a non-privileged user, and access to the datasets is restricted to just the children of the dataset specified in the `zfsync server <dataset>` command.
@@ -69,6 +73,10 @@ This command executes `zfs destroy [options] \<dataset_root\>/\<dataset\> ...` o
 **zfsync recover** *\<host\>* [options] *\<dataset\>* ...
 
 This command executes `zfs send [options] \<dataset_root\>/\<dataset\> ...` on the remote backup server to allow the datasets on the backup server to be recovered from the local computer (ie. disaster recovery). The options are the same options that apply to the `zfs send` command. Note that the remote backup server automatically prepends the \<dataset_root\> (from the command string in the authorized_keys file).
+
+**zfsync rprune** [**-r**|**-d** *depth*] *\<dataset\>* ...
+
+Prune old snapshots on the remote backup server. Refer to the manpage for the retention schedule. The **-r** and **-d** arguments have the same meaning as the **zfsync snap** command.
 
 ### User Management
 

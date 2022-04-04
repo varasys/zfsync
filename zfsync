@@ -338,10 +338,10 @@ allowreceive() {
 }
 
 prune() {
-  if [ "${1:-}" = '-n' ]; then # do a dry run
-    local -r DESTROY=":"; shift
-  else
-    local -r DESTROY="$ZFS destroy"
+  if [ "${1:-}" = '-f' ]; then # actually destroy snapshots
+    local -r DESTROY="$ZFS destroy"; shift
+  else # just do a dry run
+    local -r DESTROY="echo"
   fi
 
   compare() {
@@ -383,7 +383,6 @@ prune() {
       fi # then save everything over 10 years
     fi
     if [ "${PRUNE}" = true ]; then
-      warn 'pruning   %s' "${NAME}"
       $DESTROY "${NAME}" || ERR=$((ERR+1))
     else
       log 'retaining %s' "${NAME}"

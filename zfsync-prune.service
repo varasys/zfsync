@@ -2,6 +2,8 @@
 Description=zfsync prune service
 Requires=zfs-volumes.target
 After=zfs-volumes.target
+After=zfsync-snapshot.service
+After=zfsync-mirror.service
 ConditionPathExists=/etc/zfsync/prune.conf
 
 [Service]

@@ -1,9 +1,16 @@
 # This file provides environment variables for the zfsync-snapshot.service,
 # zfsync-mirror.service, and zfsync-prune.service.
-# The DATASETS variable is used by all three services, and the SERVER
+
+# The DATASETS variable is used by all three services, and the REMOTEHOST
 # variable is used by the mirror service.
+
 # Typically to enable all three services save this file as
-# /etc/zfsync/snapshot.conf and then symlink mirror.conf and prune.conf to it.
+# /etc/zfsync/snapshot.conf and then symlink mirror.conf and prune.conf to it
+# so all three files share the same environment variables.
+
+# Environment variables defined in this file follow the same rules as the
+# arguments to the `zfsync snapshot`, `zfsync mirror`, and `zfsync prune`
+# commands. Refer to the man page for more information.
 
 #DATASETS="-r zpool"
-#SERVER="localhost"
+#REMOTEHOST="localhost"

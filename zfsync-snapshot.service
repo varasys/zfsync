@@ -2,10 +2,9 @@
 Description=zfsync snapshot service
 Requires=zfs-volumes.target
 After=zfs-volumes.target
-Wants=zfsync-mirror.service
-Before=zfsync-mirror.service
+Wants=zfsync-mirror.service zfsync-prune.service
+Before=zfsync-mirror.service zfsync-prune.service
 ConditionPathExists=/etc/zfsync/snapshot.conf
-
 
 [Service]
 Type=oneshot

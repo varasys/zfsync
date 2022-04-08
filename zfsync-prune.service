@@ -10,4 +10,4 @@ ConditionPathExists=/etc/zfsync/prune.conf
 Type=oneshot
 User=zfsync
 EnvironmentFile=/etc/zfsync/prune.conf
-ExecStart=nice -n 19 ionice -c 3 zfsync prune $DATASETS
+ExecStart=nice -n 19 ionice -c 3 zfsync prune -f $DATASETS

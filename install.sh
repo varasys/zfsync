@@ -39,7 +39,7 @@ case "${1:-"install"}" in
     install -v snapshot.conf.sample "${ETCDIR}/"
     install -v -T zfsync-completion.bash "${COMPLETEDIR}/zfsync"
     gzip  --to-stdout zfsync.1 > "${MANDIR}/zfsync.1.gz"
-    "${BINDIR}/zfsync" configuser zfsync "${ETCDIR}"
+    "${BINDIR}/zfsync" configuser
 
     printf '\nfinished installing zfsync\n\nread the man page for configuration and use instructions\n\n'
     ;;

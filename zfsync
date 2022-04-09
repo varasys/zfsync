@@ -30,9 +30,10 @@ readonly SNAPPREFIX="${SNAPPREFIX:-"zfsync_"}" # prefix for snapshot name
 readonly DATECMD="${DATECMD:-"date -u +%F_%H-%M-%S_UTC"}" # command to generate snapshot name timestamp
 if [ -z "${BUFFER:-}" ]; then
   if command -v mbuffer >/dev/null; then
-    readonly BUFFER="$(command -v mbuffer) -s 128k"
+    readonly BUFFER="$(command -v mbuffer) -s 128k -q"
   else
-    fatal 'mbuffer executable not found'
+    warn 'mbuffer executable not found'
+    readonly BUFFER="cat"
   fi
 fi
 
@@ -116,13 +117,13 @@ create_remote() {
   local -r SOURCE="$1"
   local -r FIRST=$($ZFS list -t snap -Ho name -s creation "${SOURCE}" \
     | head -n 1)
-  $ZFS send -DLcew "${FIRST}" | $BUFFER -q | $RPC receive -s "${SOURCE}"
+  $ZFS send -vDLcew "${FIRST}" | $BUFFER | $RPC receive -vs "${SOURCE}"
 }
 
 resume_remote() {
   local -r SOURCE="$1"
   local -r TOKEN="$2"
-  $ZFS send -e -t "${TOKEN}" | $BUFFER -q | $RPC receive -s "${SOURCE}"
+  $ZFS send -ve -t "${TOKEN}" | $BUFFER | $RPC receive -vs "${SOURCE}"
 }
 
 update_remote() {
@@ -136,7 +137,7 @@ update_remote() {
     | awk "\$2 == ${REMOTEGUID} { print \$1 }")"
   [ -n "${STARTSNAP}" ] || fatal "can't find snapshot/bookmark for guid=%s" "${REMOTEGUID}"
   local -r FINISHSNAP="$($ZFS list -t snap -Ho name -S creation "${SOURCE}" | head -n 1)"
-  $ZFS send -DLcew -I "${STARTSNAP}" "${FINISHSNAP}" | $BUFFER -q | $RPC receive -s "${SOURCE}"
+  $ZFS send -vDLcew -I "${STARTSNAP}" "${FINISHSNAP}" | $BUFFER | $RPC receive -vs "${SOURCE}"
 }
 
 mirror() {
@@ -227,7 +228,7 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
       ;;
     'receive')
       prepare ":Penvt:Fhsuo:x:dA" "$@"
-      ${BUFFER} -q | $ZFS receive -v "${ARGS[@]}" >&2
+      ${BUFFER} | $ZFS receive "${ARGS[@]}" >&2
       # shellcheck disable=2124 # use last item in array as string
       SSH_ORIGINAL_COMMAND="status ${@: -1}" server "${TARGET}";;
     'list')

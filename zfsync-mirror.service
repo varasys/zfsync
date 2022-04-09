@@ -12,3 +12,4 @@ Type=oneshot
 User=zfsync
 EnvironmentFile=/etc/zfsync/mirror.conf
 ExecStart=nice -n 19 ionice -c 3 zfsync mirror $REMOTEHOST $DATASETS
+ExecStartPost=nice -n 19 ionice -c 3 zfsync rprune $REMOTEHOST -f $DATASETS

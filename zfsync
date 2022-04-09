@@ -32,7 +32,7 @@ if [ -z "${BUFFER:-}" ]; then
   if command -v mbuffer >/dev/null; then
     readonly BUFFER="$(command -v mbuffer) -s 128k -q"
   else
-    warn 'mbuffer not found'
+    warn 'mbuffer executable not found'
     readonly BUFFER="$(command -v cat)"
   fi
 fi
@@ -240,7 +240,7 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
       prepare ":Rdfnprv" "$@"
       $ZFS destroy "${ARGS[@]}";;
     'prune')
-      prepare ":rd:" "$@"
+      prepare ":frd:" "$@"
       prune "${ARGS[@]}";;
     *)
       #shellcheck disable=2016 # don't expand %s below
@@ -289,7 +289,7 @@ allowsend() {
   # shellcheck disable=2016 # don't expand command below
   id "${USER}" >/dev/null 2>&1 \
     || fatal 'user %s does not exist - consider running `%s configuser %s`' "${USER}" "$(basename "$0")"
-  local -r PERMS="send,snapshot,bookmark,hold"
+  local -r PERMS="send,snapshot,bookmark,hold,mount"
   log "granting '%s' permissions to '%s' on dataset '%s'" "${PERMS}" "${USER}" "${DATASET}"
   $ZFS allow "${USER}" "${PERMS}" "${DATASET}"
   $ZFS allow "${DATASET}"
@@ -312,7 +312,7 @@ allowreceive() {
   # shellcheck disable=2016 # don't expand command below
   id "${USER}" >/dev/null 2>&1 \
     || fatal 'user %s does not exist - consider running `%s configuser %s`' "${USER}" "$(basename "$0")"
-  local -r PERMS='receive,mount,create,userprop,encryption,canmount,mountpoint,compression,destroy,send,bookmark,keylocation'
+  local -r PERMS='receive,mount,create,userprop,encryption,canmount,mountpoint,compression,destroy,send,bookmark,keylocation,mount'
   if ! $ZFS list "${DATASET}" >/dev/null 2>&1; then
     warn 'creating dataset %s' "${DATASET}"
     $ZFS create -o mountpoint=none -p "${DATASET}"
@@ -341,7 +341,7 @@ prune() {
   if [ "${1:-}" = '-f' ]; then # actually destroy snapshots
     local -r DESTROY="$ZFS destroy"; shift
   else # just do a dry run
-    local -r DESTROY="echo"
+    local -r DESTROY=":"
   fi
 
   compare() {
@@ -383,6 +383,7 @@ prune() {
       fi # then save everything over 10 years
     fi
     if [ "${PRUNE}" = true ]; then
+      warn 'destroying %s' "${NAME}"
       $DESTROY "${NAME}" || ERR=$((ERR+1))
     else
       log 'retaining %s' "${NAME}"

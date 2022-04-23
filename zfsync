@@ -14,6 +14,7 @@ readonly VERSION="0.0.1"
 # [ ] TODO implement pre/post snap and mirror hooks
 # [ ] TODO implement localhost mirroring (without ssh)
 # [ ] TODO implement creating dummy datasets on backup server for broken chains (probably not; let the user do this manually??)
+# [ ] TODO make sure scripts exits with an exit code if ssh fails to connect
 # [x] TODO implement pruning (maybe; consider this may be best for seperate script; or may be best for this script to prune on remote also)
 # [x] TODO seperate snap and mirror into two seperate systemd services
 # [x] TODO add quota option to `zfsync allowreceive`
@@ -115,29 +116,45 @@ connect() {
 
 create_remote() {
   local -r SOURCE="$1"
-  local -r FIRST=$($ZFS list -t snap -Ho name -s creation "${SOURCE}" \
+  local -r FIRST=$($ZFS list -t snap -Ho name -s createtxg "${SOURCE}" \
     | head -n 1)
-  $ZFS send -vDLcew "${FIRST}" | $BUFFER | $RPC receive -vs "${SOURCE}"
+  $ZFS send -vLcew "${FIRST}" | $BUFFER | $RPC receive -s "${SOURCE}"
 }
 
 resume_remote() {
   local -r SOURCE="$1"
   local -r TOKEN="$2"
-  $ZFS send -ve -t "${TOKEN}" | $BUFFER | $RPC receive -vs "${SOURCE}"
+  $ZFS send -ve -t "${TOKEN}" | $BUFFER | $RPC receive -s "${SOURCE}"
 }
 
 update_remote() {
   local -r SOURCE="$1"
   local -r REMOTEGUID="$2"
   local STARTSNAP
-  STARTSNAP="$($ZFS list -Ho name,guid -t snapshot -s creation "${SOURCE}" \
-    | awk "\$2 == ${REMOTEGUID} { print \$1 }")"
-  # if STARTSNAP is not found then search bookmarks
-  [ -n "${STARTSNAP}" ] || STARTSNAP="$($ZFS list -Ho name,guid -t bookmark -s creation "${SOURCE}" \
-    | awk "\$2 == ${REMOTEGUID} { print \$1 }")"
-  [ -n "${STARTSNAP}" ] || fatal "can't find snapshot/bookmark for guid=%s" "${REMOTEGUID}"
-  local -r FINISHSNAP="$($ZFS list -t snap -Ho name -S creation "${SOURCE}" | head -n 1)"
-  $ZFS send -vDLcew -I "${STARTSNAP}" "${FINISHSNAP}" | $BUFFER | $RPC receive -vs "${SOURCE}"
+  if # search for snapshot
+    STARTSNAP="$($ZFS list -Ho name,guid -t snapshot -s createtxg "${SOURCE}" \
+      | awk "\$2 == ${REMOTEGUID} { print \$1 }")"
+    [ -n "${STARTSNAP}" ]
+  then # do deep (ie. -I) incremental send based on starting snapshot
+    local -r FINISHSNAP="$($ZFS list -t snap -Ho name -S createtxg "${SOURCE}" | head -n 1)"
+    $ZFS send -vLcew -I "${STARTSNAP}" "${FINISHSNAP}" | $BUFFER | $RPC receive -s "${SOURCE}"
+  elif # if STARTSNAP is not found then search bookmarks
+    STARTSNAP="$($ZFS list -Ho name,guid,createtxg -t bookmark -s createtxg "${SOURCE}" \
+      | awk "\$2 == ${REMOTEGUID} { print \$1, \$3 }")"
+    if [ -n "${STARTSNAP}" ]; then # a bookmark exists
+      CREATETXG="${STARTSNAP#* }" # the next snapshot will be the one with createtxg higher than this
+      STARTSNAP="${STARTSNAP% *}" # this is the starting bookmark
+      local -r FINISHSNAP="$($ZFS list -t snap -Ho name,createtxg -s createtxg "${SOURCE}" \
+        | awk "\$2 > $CREATETXG { print \$1; exit }")"
+    fi
+    [ -n "${FINISHSNAP}" ] # a snapshot exists after the bookmark
+  then # do shallow (ie. -i) incemental send to next available snapshot (since -I not possible from a bookmark)
+    # this will only send the snapshot immediately following the bookmark (ie shallow incremental send)
+    # the next cycle will do a deep incremental send to get everything up to date
+    $ZFS send -vLcew -i "${STARTSNAP}" "${FINISHSNAP}" | $BUFFER | $RPC receive -s "${SOURCE}"
+  else
+    fatal "can't find snapshot/bookmark for guid=%s" "${REMOTEGUID}"
+  fi
 }
 
 mirror() {
@@ -153,7 +170,7 @@ mirror() {
       until
         debug 'remote STATUS: %s' "$STATUS"
         local GUID
-        GUID="$($ZFS list -t snap -Ho guid -S creation "${DATASET}" | head -n 1)" || fatal 'error querying guid for %s' "${DATASET}"
+        GUID="$($ZFS list -t snap -Ho guid -S createtxg "${DATASET}" | head -n 1)" || fatal 'error querying guid for %s' "${DATASET}"
         debug 'local GUID: %s' "$GUID"
         [ -n "${GUID}" ] || fatal "error mirroring %s - no existing snapshots" "${DATASET}"
         [ "${GUID}" = "${STATUS#guid=}" ] && debug 'complete: %s synced to GUID=%s' "${DATASET}" "${GUID}"
@@ -213,7 +230,7 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
       local TOKEN
       TOKEN="$($ZFS list -Ho receive_resume_token "${TARGET}/${SOURCE}" 2>/dev/null)"
       if [ "${TOKEN}" = "-" ]; then # dataset exists so check for guid
-        local -r GUID="$($ZFS list -t snapshot -Ho guid -S creation "${TARGET}/${SOURCE}" | head -n 1)"
+        local -r GUID="$($ZFS list -t snapshot -Ho guid -S createtxg "${TARGET}/${SOURCE}" | head -n 1)"
         if [ -n "${GUID}" ]; then
           TOKEN="guid=${GUID}" # respond with the guid
         else

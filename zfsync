@@ -110,7 +110,7 @@ connect() {
       exit \$ERR
     " EXIT
     readonly RPC=$(printf '%s -o ControlMaster=no -S %s %s' "${SSH}" "${SOCKET}" "${HOST}")
-    export RPC # need to export so function subshells have access
+    export RPC # need to export so subshells have access
   fi
 }
 
@@ -130,37 +130,30 @@ resume_remote() {
 update_remote() {
   local -r SOURCE="$1"
   local -r REMOTEGUID="$2"
-  local STARTSNAP
-  if # search for snapshot
-    STARTSNAP="$($ZFS list -Ho name,guid -t snapshot -s createtxg "${SOURCE}" \
-      | awk "\$2 == ${REMOTEGUID} { print \$1 }")"
-    [ -n "${STARTSNAP}" ]
-  then # do deep (ie. -I) incremental send based on starting snapshot
-    local -r FINISHSNAP="$($ZFS list -t snap -Ho name -S createtxg "${SOURCE}" | head -n 1)"
-    $ZFS send -vLcew -I "${STARTSNAP}" "${FINISHSNAP}" | $BUFFER | $RPC receive -s "${SOURCE}"
-  elif # if STARTSNAP is not found then search bookmarks
-    STARTSNAP="$($ZFS list -Ho name,guid,createtxg -t bookmark -s createtxg "${SOURCE}" \
-      | awk "\$2 == ${REMOTEGUID} { print \$1, \$3 }")"
-    if [ -n "${STARTSNAP}" ]; then # a bookmark exists
-      CREATETXG="${STARTSNAP#* }" # the next snapshot will be the one with createtxg higher than this
-      STARTSNAP="${STARTSNAP% *}" # this is the starting bookmark
-      local -r FINISHSNAP="$($ZFS list -t snap -Ho name,createtxg -s createtxg "${SOURCE}" \
-        | awk "\$2 > $CREATETXG { print \$1; exit }")"
-    fi
-    [ -n "${FINISHSNAP}" ] # a snapshot exists after the bookmark
-  then # do shallow (ie. -i) incemental send to next available snapshot (since -I not possible from a bookmark)
-    # this will only send the snapshot immediately following the bookmark (ie shallow incremental send)
-    # the next cycle will do a deep incremental send to get everything up to date
-    $ZFS send -vLcew -i "${STARTSNAP}" "${FINISHSNAP}" | $BUFFER | $RPC receive -s "${SOURCE}"
+  local STARTSNAP CREATETXG
+  read -r STARTSNAP CREATETXG < <($ZFS list -Ho name,guid,createtxg -t snapshot -s createtxg "${SOURCE}" \
+    | awk "\$2 == ${REMOTEGUID} { print \$1, \$3 }")
+  if [ -z "${STARTSNAP}" ]; then # snapshot not found; so search bookmarks
+    read -r STARTSNAP CREATETXG < <($ZFS list -Ho name,guid,createtxg -t bookmark -s createtxg "${SOURCE}" \
+      | awk "\$2 == ${REMOTEGUID} { print \$1, \$3 }")
+  fi
+  if [ -z "${STARTSNAP}" ]; then
+    fatal 'no snapshot or bookmark found for guid: %s' "${REMOTEGUID}"
   else
-    fatal "can't find snapshot/bookmark for guid=%s" "${REMOTEGUID}"
+    local -r NEXTSNAP="$($ZFS list -t snap -Ho name,createtxg -s createtxg "${SOURCE}" \
+      | awk "\$2 > $CREATETXG { print \$1; exit }")"
+    if [ -n "${NEXTSNAP}" ]; then
+      $ZFS send -vLcew -i "${STARTSNAP}" "${NEXTSNAP}" | $BUFFER | $RPC receive -s "${SOURCE}"
+    else
+      $RPC status "${SOURCE}"
+    fi
   fi
 }
 
 mirror() {
   # shellcheck disable=2207 # don't quote process substitution
   local -ar DATASETS=( $($ZFS list -Ho "name,${AUTOMIRRORPROP}" -s name "$@" \
-    | awk '{ if ($2 != "false") print $1 }' | uniq) )
+    | awk '{ if ($2 != "false") print $1 }') )
   local DATASET
   for DATASET in "${DATASETS[@]}"; do
     ( # operate in a subshell so fatel error will continue loop instead of exiting script

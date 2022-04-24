@@ -29,14 +29,6 @@ readonly AUTOMIRRORPROP="${AUTOMIRRORPROP:-"${AUTOSNAPPROP}"}"
 # readonly AUTOPRUNEPROP="${AUTOPRUNEPROP:-"${AUTOSNAPPROP}"}"
 readonly SNAPPREFIX="${SNAPPREFIX:-"zfsync_"}" # prefix for snapshot name
 readonly DATECMD="${DATECMD:-"date -u +%F_%H-%M-%S_UTC"}" # command to generate snapshot name timestamp
-if [ -z "${BUFFER:-}" ]; then
-  if command -v mbuffer >/dev/null; then
-    readonly BUFFER="$(command -v mbuffer) -s 128k -q"
-  else
-    warn 'mbuffer executable not found'
-    readonly BUFFER="cat"
-  fi
-fi
 
 ERR=0 # error counter (incremented when error function is called)
 trap 'exit $ERR' EXIT # note that the connect function redefines this if it is called
@@ -118,12 +110,14 @@ create_remote() {
   local -r SOURCE="$1"
   local -r FIRST=$($ZFS list -t snap -Ho name -s createtxg "${SOURCE}" \
     | head -n 1)
+  configbuffer
   $ZFS send -vLcew "${FIRST}" | $BUFFER | $RPC receive -s "${SOURCE}"
 }
 
 resume_remote() {
   local -r SOURCE="$1"
   local -r TOKEN="$2"
+  configbuffer
   $ZFS send -ve -t "${TOKEN}" | $BUFFER | $RPC receive -s "${SOURCE}"
 }
 
@@ -143,9 +137,21 @@ update_remote() {
     local -r NEXTSNAP="$($ZFS list -t snap -Ho name,createtxg -s createtxg "${SOURCE}" \
       | awk "\$2 > $CREATETXG { print \$1; exit }")"
     if [ -n "${NEXTSNAP}" ]; then
+      configbuffer
       $ZFS send -vLcew -i "${STARTSNAP}" "${NEXTSNAP}" | $BUFFER | $RPC receive -s "${SOURCE}"
     else
       $RPC status "${SOURCE}"
+    fi
+  fi
+}
+
+configbuffer() {
+  if [ -z "${BUFFER:-}" ]; then
+    if command -v mbuffer >/dev/null; then
+      readonly BUFFER="$(command -v mbuffer) -s 128k -q"
+    else
+      warn 'mbuffer executable not found'
+      readonly BUFFER="cat"
     fi
   fi
 }
@@ -237,6 +243,7 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
       printf '%s' "${TOKEN}"
       ;;
     'receive')
+      configbuffer
       prepare ":Penvt:Fhsuo:x:dA" "$@"
       ${BUFFER} | $ZFS receive "${ARGS[@]}" >&2
       # shellcheck disable=2124 # use last item in array as string

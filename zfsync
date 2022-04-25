@@ -94,7 +94,7 @@ connect() {
     [ -n "${SSH}" ] || fatal 'fatal error: ssh command not found'
     local -r SOCKET="${HOME}/.ssh/zfsync_${HOST}_$(date +%s%N)"
     # log 'connecting to ssh host: %s ...' "${HOST}"
-    ${SSH} -fMN -S "${SOCKET}" "${HOST}"
+    ${SSH} -fMN -S "${SOCKET}" "${HOST}" || fatal 'fatal error: failed to establish ssh connection'
     # shellcheck disable=2064 # expand HOST and SOCKET at definition time
     trap "
       # log 'disconnecting from ssh host: %s ...' '${HOST}'

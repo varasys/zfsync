@@ -169,9 +169,9 @@ mirror() {
       until
         debug 'remote STATUS: %s' "$STATUS"
         local GUID
-        GUID="$($ZFS list -t snap -Ho guid -S createtxg "${DATASET}" | head -n 1)" || fatal 'error querying guid for %s' "${DATASET}"
+        GUID="$($ZFS list -t snap -Ho guid -S createtxg "${DATASET}" | head -n 1)"
         debug 'local GUID: %s' "$GUID"
-        [ -n "${GUID}" ] || fatal "error mirroring %s - no existing snapshots" "${DATASET}"
+        [ -n "${GUID}" ] || fatal "error querying guid for %s" "${DATASET}"
         [ "${GUID}" = "${STATUS#guid=}" ] && debug 'complete: %s synced to GUID=%s' "${DATASET}" "${GUID}"
       do
         case "${STATUS}" in
@@ -403,17 +403,13 @@ prune() {
     if [ "${PRUNE}" = true ]; then
       warn 'destroying %s' "${NAME}"
       $DESTROY "${NAME}" || ERR=$((ERR+1))
-    else
-      log 'retaining %s' "${NAME}"
+    # else # this was just for debugging
+    #   log 'retaining %s' "${NAME}"
     fi
     PREV=( [CREATION]="$CREATION" [DATASET]="$DATASET" [SNAPSHOT]="$SNAPSHOT" )
   done < <( # need this to be in a subshell so the while loop can increment ERR
-    # if [ -t 0 ]; then # stdin is not piped, so run zfs command
-    #   $ZFS list -t snapshot -Hpo "${AUTOPRUNEPROP},creation,name" "$@"
-    # else # stdin is piped, so pass through input from stdin
-    #   cat # but note there is no error handling for bad input
-    # fi \
-    # | awk -F '\t|@' '$1 == "true" { print $2, $3, $4 }' \
+    # the awk command below takes two columns input and splits into three columns output (on \t and @)
+    # the sort command sorts by name in reverse, then by creation in reverse numerically
     $ZFS list -t snapshot -Hpo creation,name "$@" \
       | awk -F '\t|@' '{ print $1, $2, $3 }' \
       | sort -k 2,2r -k 1,1nr

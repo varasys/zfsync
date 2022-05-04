@@ -21,4 +21,13 @@ else
   echo "checking out devel branch ..."
   git checkout devel
   echo "finished deploying"
+  source <(grep "^readonly VERSION=" ./zfsync)
+  if [ -z "${VERSION:-}" ]; then
+    echo "failed to update version"
+  else
+    # from https://stackoverflow.com/a/61921674
+    NEXTVERSION=$(echo ${VERSION} | awk -F. -v OFS=. '{$NF += 1 ; print}')
+    echo "bumping version number from $VERSION to $NEXTVERSION ..."
+    sed -i "s/^readonly VERSION=\"$VERSION\"/readonly VERSION=\"$NEXTVERSION\"/" ./zfsync
+  fi
 fi

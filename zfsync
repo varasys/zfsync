@@ -24,6 +24,9 @@ trap 'exit $ERR' EXIT # note that the connect function redefines this if it is c
 # [x] TODO update sync logic to check for new latest snapshot after each send
 # [x] TODO config zfsync user (as sender and receiver)
 
+# EXPLINATIONS:
+# `awk 'FNR <= 1'` does the same as `head -n 1` but prevents sigpipe errors from head quitting before output is finished
+
 readonly AUTOSNAPPROP="${AUTOSNAPPROP:-"com.sun:auto-snapshot"}" # dataset user property (set false to exclude dataset from snapshoting and backups)
 readonly AUTOMIRRORPROP="${AUTOMIRRORPROP:-"${AUTOSNAPPROP}"}"
 # readonly AUTOPRUNEPROP="${AUTOPRUNEPROP:-"${AUTOSNAPPROP}"}"
@@ -109,7 +112,7 @@ configbuffer() {
 create_remote() {
   local SOURCE FIRST
   SOURCE="$1"
-  FIRST=$($ZFS list -t snap -Ho name -s createtxg "${SOURCE}" | head -n 1)
+  FIRST=$($ZFS list -t snap -Ho name -s createtxg "${SOURCE}" | awk 'FNR <= 1')
   configbuffer
   $ZFS send -PLcew "${FIRST}" | $BUFFER | $RPC receive -s "${SOURCE}"
 }
@@ -160,7 +163,7 @@ mirror() {
       STATUS="$($RPC status "${DATASET}")"
       until
         local GUID
-        GUID="$($ZFS list -t snap -Ho guid -S createtxg "${DATASET}" | head -n 1)"
+        GUID="$($ZFS list -t snap -Ho guid -S createtxg "${DATASET}" | awk 'FNR <= 1')"
         [ -n "${GUID}" ] || fatal "error querying guid for %s" "${DATASET}"
         [ "${GUID}" = "${STATUS#guid=}" ] && log 'finished mirroring %s to %s' "${DATASET}" "${GUID}"
       do
@@ -220,7 +223,7 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
       TOKEN="$($ZFS list -Ho receive_resume_token "${TARGET}/${SOURCE}" 2>/dev/null)"
       if [ "${TOKEN}" = "-" ]; then # dataset exists so check for guid
         local GUID
-        GUID="$($ZFS list -t snapshot -Ho guid -S createtxg "${TARGET}/${SOURCE}" | head -n 1)"
+        GUID="$($ZFS list -t snapshot -Ho guid -S createtxg "${TARGET}/${SOURCE}" | awk 'FNR <= 1')"
         if [ -n "${GUID}" ]; then
           TOKEN="guid=${GUID}" # respond with the guid
         else

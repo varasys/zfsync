@@ -7,22 +7,22 @@
 
 readonly VERSION="0.0.1"
 
-# note that ~/.ssh/authorized_keys file on the backup server must have an entry of the following form:
-# restrict,command="zfsync server pool/path" ssh-ed25519 <key> [comment]
+set -Eeuo pipefail # fast fail on errors, undefined variables, and pipeline errors
+
+declare -i ERR=0 # error counter (incremented when error function is called)
+trap '((ERR++))' ERR
+trap 'exit $ERR' EXIT # note that the connect function redefines this if it is called
 
 # [ ] TODO create udev rule to import pool and perform mirror on usb drive hotplug
 # [ ] TODO implement pre/post snap and mirror hooks
 # [ ] TODO implement localhost mirroring (without ssh)
 # [ ] TODO implement creating dummy datasets on backup server for broken chains (probably not; let the user do this manually??)
-# [ ] TODO make sure scripts exits with an exit code if ssh fails to connect
+# [x] TODO make sure scripts exits with an exit code if ssh fails to connect
 # [x] TODO implement pruning (maybe; consider this may be best for seperate script; or may be best for this script to prune on remote also)
 # [x] TODO seperate snap and mirror into two seperate systemd services
 # [x] TODO add quota option to `zfsync allowreceive`
 # [x] TODO update sync logic to check for new latest snapshot after each send
 # [x] TODO config zfsync user (as sender and receiver)
-
-set -euo pipefail # fast fail on errors, undefined variables, and pipeline errors
-
 
 readonly AUTOSNAPPROP="${AUTOSNAPPROP:-"com.sun:auto-snapshot"}" # dataset user property (set false to exclude dataset from snapshoting and backups)
 readonly AUTOMIRRORPROP="${AUTOMIRRORPROP:-"${AUTOSNAPPROP}"}"
@@ -30,21 +30,10 @@ readonly AUTOMIRRORPROP="${AUTOMIRRORPROP:-"${AUTOSNAPPROP}"}"
 readonly SNAPPREFIX="${SNAPPREFIX:-"zfsync_"}" # prefix for snapshot name
 readonly DATECMD="${DATECMD:-"date -u +%F_%H-%M-%S_UTC"}" # command to generate snapshot name timestamp
 
-ERR=0 # error counter (incremented when error function is called)
-trap 'exit $ERR' EXIT # note that the connect function redefines this if it is called
-
 log() {
   local -r MSG="$1"; shift
   # shellcheck disable=2059 # allow variable in printf format string
   printf "\e[1m${MSG}\e[0m\n" "$@" >&2
-}
-
-debug() {
-  if [ "${DEBUG:-}" = true ]; then # this will be set when first command line argument is "-d"
-    local -r MSG="$1"; shift
-    # shellcheck disable=2059 # allow variable in printf format string
-    printf "\e[1m\e[4;36m${MSG}\e[0m\n" "$@" >&2
-  fi
 }
 
 warn() {
@@ -65,16 +54,19 @@ fatal() {
   # shellcheck disable=2059 # allow variable in printf format string
   printf "\e[1m\e[31m${MSG}\e[0m\n" "$@" >&2
   ((ERR++))
-  exit $ERR
+  false
 }
 
-readonly ZFS="$(command -v zfs)"
-[ -n "${ZFS}" ] || fatal 'fatal error: zfs command not found'
+declare ZFS
+ZFS="$(command -v zfs)" || fatal 'fatal error: zfs command not found'
+readonly ZFS
 
 snapshot() {
-  local -r SNAPSHOT="${SNAPPREFIX}$(${DATECMD})"
+  local SNAPSHOT
+  SNAPSHOT="${SNAPPREFIX}$(${DATECMD})"
   #shellcheck disable=2207 # do not quote process substitution
-  local -ar SNAPSHOTS=( $($ZFS list -Ho "name,${AUTOSNAPPROP}" -s name "$@" \
+  local -a SNAPSHOTS
+  SNAPSHOTS=( $($ZFS list -Ho "name,${AUTOSNAPPROP}" -s name "$@" \
     | awk -v suf="@${SNAPSHOT}" '{ if ($2 != "false") print $1 suf }' \
     | uniq) )
   if [ ${#SNAPSHOTS[@]} -gt 0 ]; then
@@ -89,12 +81,11 @@ snapshot() {
 
 connect() {
   if [ -z "${RPC:-}" ]; then # don't reconnect if $RPC is already defined
-    local -r HOST="$1"
-    local -r SSH="$(command -v ssh)"
-    [ -n "${SSH}" ] || fatal 'fatal error: ssh command not found'
-    local -r SOCKET="${HOME}/.ssh/zfsync_${HOST}_$(date +%s%N)"
-    # log 'connecting to ssh host: %s ...' "${HOST}"
-    ${SSH} -fMN -S "${SOCKET}" "${HOST}" || fatal 'fatal error: failed to establish ssh connection'
+    local HOST SSH SOCKET
+    HOST="$1"
+    SSH="$(command -v ssh)" || fatal 'fatal error: ssh command not found'
+    SOCKET="${HOME}/.ssh/zfsync_${HOST}_$(date +%s%N)"
+    ${SSH} -fMN -S "${SOCKET}" "${HOST}"
     # shellcheck disable=2064 # expand HOST and SOCKET at definition time
     trap "
       # log 'disconnecting from ssh host: %s ...' '${HOST}'
@@ -106,25 +97,35 @@ connect() {
   fi
 }
 
+configbuffer() {
+  if [ -z "${BUFFER:-}" ]; then
+    if ! BUFFER="$(command -v mbuffer) -s 128k -q"; then
+      warn 'mbuffer executable not found'
+      BUFFER="$(command -v cat)"
+    fi
+  fi
+}
+
 create_remote() {
-  local -r SOURCE="$1"
-  local -r FIRST=$($ZFS list -t snap -Ho name -s createtxg "${SOURCE}" \
-    | head -n 1)
+  local SOURCE FIRST
+  SOURCE="$1"
+  FIRST=$($ZFS list -t snap -Ho name -s createtxg "${SOURCE}" | head -n 1)
   configbuffer
-  $ZFS send -vLcew "${FIRST}" | $BUFFER | $RPC receive -s "${SOURCE}"
+  $ZFS send -PLcew "${FIRST}" | $BUFFER | $RPC receive -s "${SOURCE}"
 }
 
 resume_remote() {
-  local -r SOURCE="$1"
-  local -r TOKEN="$2"
+  local SOURCE TOKEN
+  SOURCE="$1"
+  TOKEN="$2"
   configbuffer
-  $ZFS send -ve -t "${TOKEN}" | $BUFFER | $RPC receive -s "${SOURCE}"
+  $ZFS send -Pe -t "${TOKEN}" | $BUFFER | $RPC receive -s "${SOURCE}"
 }
 
 update_remote() {
-  local -r SOURCE="$1"
-  local -r REMOTEGUID="$2"
-  local STARTSNAP CREATETXG
+  local SOURCE REMOTEGUID STARTSNAP CREATETXG
+  SOURCE="$1"
+  REMOTEGUID="$2"
   read -r STARTSNAP CREATETXG < <($ZFS list -Ho name,guid,createtxg -t snapshot -s createtxg "${SOURCE}" \
     | awk "\$2 == ${REMOTEGUID} { print \$1, \$3 }")
   if [ -z "${STARTSNAP}" ]; then # snapshot not found; so search bookmarks
@@ -134,45 +135,34 @@ update_remote() {
   if [ -z "${STARTSNAP}" ]; then
     fatal 'no snapshot or bookmark found for guid: %s' "${REMOTEGUID}"
   else
-    local -r NEXTSNAP="$($ZFS list -t snap -Ho name,createtxg -s createtxg "${SOURCE}" \
+    local NEXTSNAP
+    NEXTSNAP="$($ZFS list -t snap -Ho name,createtxg -s createtxg "${SOURCE}" \
       | awk "\$2 > $CREATETXG { print \$1; exit }")"
     if [ -n "${NEXTSNAP}" ]; then
       configbuffer
-      $ZFS send -vLcew -i "${STARTSNAP}" "${NEXTSNAP}" | $BUFFER | $RPC receive -s "${SOURCE}"
+      $ZFS send -PLcew -i "${STARTSNAP}" "${NEXTSNAP}" | $BUFFER | $RPC receive -s "${SOURCE}"
     else
       $RPC status "${SOURCE}"
     fi
   fi
 }
 
-configbuffer() {
-  if [ -z "${BUFFER:-}" ]; then
-    if command -v mbuffer >/dev/null; then
-      readonly BUFFER="$(command -v mbuffer) -s 128k -q"
-    else
-      warn 'mbuffer executable not found'
-      readonly BUFFER="cat"
-    fi
-  fi
-}
-
 mirror() {
   # shellcheck disable=2207 # don't quote process substitution
-  local -ar DATASETS=( $($ZFS list -Ho "name,${AUTOMIRRORPROP}" -s name "$@" \
+  local -a DATASETS
+  DATASETS=( $($ZFS list -Ho "name,${AUTOMIRRORPROP}" -s name "$@" \
     | awk '{ if ($2 != "false") print $1 }') )
   local DATASET
   for DATASET in "${DATASETS[@]}"; do
-    ( # operate in a subshell so fatel error will continue loop instead of exiting script
+    ( # operate in a subshell so fatel error will break/continue loop instead of exiting script
       log '\nmirroring %s ...' "${DATASET}"
       local STATUS
       STATUS="$($RPC status "${DATASET}")"
       until
-        debug 'remote STATUS: %s' "$STATUS"
         local GUID
         GUID="$($ZFS list -t snap -Ho guid -S createtxg "${DATASET}" | head -n 1)"
-        debug 'local GUID: %s' "$GUID"
         [ -n "${GUID}" ] || fatal "error querying guid for %s" "${DATASET}"
-        [ "${GUID}" = "${STATUS#guid=}" ] && debug 'complete: %s synced to GUID=%s' "${DATASET}" "${GUID}"
+        [ "${GUID}" = "${STATUS#guid=}" ] && log 'finished mirroring %s to %s' "${DATASET}" "${GUID}"
       do
         case "${STATUS}" in
           receive_resume_token=*)
@@ -195,7 +185,7 @@ mirror() {
 
 server() { # run from authorized_keys file on the backup server (ie. command="zfsync receive zpool/backups")
   local -a ARGS=( )
-  local -r TARGET="$1" # the dataset path prefix including pool name (ie. zpool/backups)
+  local -r TARGET="${1:?"missing dataset path prefix argument"}" # the dataset path prefix including pool name (ie. zpool/backups)
   prepare() { # function to add local dataset prefix to datasets
     local -r OPTSTRING="$1" # getopts optstring of allowable flags (ie. ":rd:Ho:t:s:S:")
     shift
@@ -222,14 +212,15 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
   }
   # shellcheck disable=2086 # use word splitting below
   set -- ${SSH_ORIGINAL_COMMAND}
-  local -r SUBCMD="$1"; shift
+  local -r SUBCMD="${1:-}"; shift
   case "${SUBCMD}" in
     'status')
       local -r SOURCE="$1"
       local TOKEN
       TOKEN="$($ZFS list -Ho receive_resume_token "${TARGET}/${SOURCE}" 2>/dev/null)"
       if [ "${TOKEN}" = "-" ]; then # dataset exists so check for guid
-        local -r GUID="$($ZFS list -t snapshot -Ho guid -S createtxg "${TARGET}/${SOURCE}" | head -n 1)"
+        local GUID
+        GUID="$($ZFS list -t snapshot -Ho guid -S createtxg "${TARGET}/${SOURCE}" | head -n 1)"
         if [ -n "${GUID}" ]; then
           TOKEN="guid=${GUID}" # respond with the guid
         else
@@ -238,7 +229,7 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
       elif [ -n "${TOKEN}" ]; then # there is a resume token (which is not '-') so use it
         TOKEN="receive_resume_token=${TOKEN}"
       else
-        TOKEN='missing'
+        TOKEN='missing' # the dataset does not exist
       fi
       printf '%s' "${TOKEN}"
       ;;
@@ -261,8 +252,7 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
       prepare ":frd:" "$@"
       prune "${ARGS[@]}";;
     *)
-      #shellcheck disable=2016 # don't expand %s below
-      fatal 'fatal error: unknown command `%s`\n' "$SSH_ORIGINAL_COMMAND"
+      fatal 'fatal error: unknown zfsync server command: %s\n' "$SSH_ORIGINAL_COMMAND"
       ;;
   esac
 }
@@ -359,7 +349,8 @@ prune() {
   if [ "${1:-}" = '-f' ]; then # actually destroy snapshots
     local -r DESTROY="$ZFS destroy"; shift
   else # just do a dry run
-    local -r DESTROY=":"
+    warn 'performing a dry run; use the -f argument to actually destroy snapshots'
+    local -r DESTROY=":" # this is a noop
   fi
 
   compare() {
@@ -370,7 +361,7 @@ prune() {
     [ "$(date --date="@${CURRENT}" ${FORMAT})" = "$(date --date="@${PREV}" ${FORMAT})" ]
   }
 
-  local -r NOW="$(date --date="${START:-$(date)}" +%s)" # START is used for debugging
+  local -r NOW="$(date --date="${START:-$(date)}" +%s)" # define START as needed during debugging
   # time durations                # backup frequency buckets
   local -r SECOND=$((1))          # (ie. save hourly snapshots for 7 days)
   local -r MINUTE=$((60*SECOND))  # (ie. save daily snapshots for 4 weeks)
@@ -403,8 +394,6 @@ prune() {
     if [ "${PRUNE}" = true ]; then
       warn 'destroying %s' "${NAME}"
       $DESTROY "${NAME}" || ERR=$((ERR+1))
-    # else # this was just for debugging
-    #   log 'retaining %s' "${NAME}"
     fi
     PREV=( [CREATION]="$CREATION" [DATASET]="$DATASET" [SNAPSHOT]="$SNAPSHOT" )
   done < <( # need this to be in a subshell so the while loop can increment ERR
@@ -416,10 +405,6 @@ prune() {
   )
 }
 
-if [ "${1:-}" = '-d' ]; then
-  DEBUG=true
-  shift
-fi
 readonly CMD="${1:-}"
 [ $# -gt 0 ] && shift
 case "${CMD}" in
@@ -429,15 +414,15 @@ case "${CMD}" in
     snapshot "$@";;
   'mirror')
     # help: \nmirror: mirror snapshot(s) to remote server
-    # help:   zfsync mirror <host> [-r|-d depth] <dataset> ...
+    # help:   zfsync mirror <destination> [-r|-d depth] <dataset> ...
     HOST="${1:?"missing hostname argument"}"; shift
     connect "${HOST}"
     mirror "$@";;
   'backup')
     # help: \nbackup: run `snap` and then `mirror` in a single command
-    # help:   zfsync backup <host> [-r|-d depth] <dataset> ...
+    # help:   zfsync backup <destination> [-r|-d depth] <dataset> ...
     HOST="${1:?"missing hostname argument"}"; shift
-    snap "$@"
+    snapshot "$@"
     connect "${HOST}"
     mirror "$@";;
   'prune')
@@ -446,7 +431,7 @@ case "${CMD}" in
     prune "$@";;
   'rprune')
     # help: \nrprune: prune old snapshots on remote backup server
-    # help:   zfsync rprune destination [-r|-d depth] [dataset]...
+    # help:   zfsync rprune <destination> [-r|-d depth] [dataset]...
     HOST="${1:?"missing hostname argument"}"; shift
     connect "${HOST}"
     $RPC prune "$@";;

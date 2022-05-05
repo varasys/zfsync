@@ -31,6 +31,7 @@ case "${1:-"install"}" in
       install -v zfsync-mirror.service "${SYSTEMDDIR}/"
       install -v zfsync-prune.service "${SYSTEMDDIR}/"
       install -v zfsync-snapshot.timer "${SYSTEMDDIR}/"
+      [ -z "${DESTDIR}" ] && systemctl daemon-reload # only run if installing into current system
     fi
     install -v inittest.sh "${DOCDIR}/"
     install -v README.md "${DOCDIR}/"
@@ -53,6 +54,7 @@ case "${1:-"install"}" in
       rm -v "${SYSTEMDDIR}/zfsync-snapshot.service"
       rm -v "${SYSTEMDDIR}/zfsync-mirror.service"
       rm -v "${SYSTEMDDIR}/zfsync-snapshot.timer"
+      [ -z "${DESTDIR}" ] && systemctl daemon-reload # only run if installing into current system
     fi
     printf '\nfinished uninstalling zfsync\n\n'
     ;;

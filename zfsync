@@ -1,11 +1,12 @@
 #!/bin/bash
 # ©, 2022, Casey Witt
+# utility to snapshot and mirror zfs datasets
 # developed with zfs-0.8.3
 # hosted at https://github.com/varasys/zfsync
 # script linted with shellcheck (https://www.shellcheck.net/)
 # initially meant to be posix sh compatable, but could not work out reliable enough error handling with posix sh
 
-readonly VERSION="0.0.1"
+readonly VERSION="0.0.2"
 
 set -Eeuo pipefail # fast fail on errors, undefined variables, and pipeline errors
 
@@ -13,23 +14,11 @@ declare -i ERR=0 # error counter (incremented when error function is called)
 trap '((ERR++))' ERR
 trap 'exit $ERR' EXIT # note that the connect function redefines this if it is called
 
-# [ ] TODO create udev rule to import pool and perform mirror on usb drive hotplug
-# [ ] TODO implement pre/post snap and mirror hooks
-# [ ] TODO implement localhost mirroring (without ssh)
-# [ ] TODO implement creating dummy datasets on backup server for broken chains (probably not; let the user do this manually??)
-# [x] TODO make sure scripts exits with an exit code if ssh fails to connect
-# [x] TODO implement pruning (maybe; consider this may be best for seperate script; or may be best for this script to prune on remote also)
-# [x] TODO seperate snap and mirror into two seperate systemd services
-# [x] TODO add quota option to `zfsync allowreceive`
-# [x] TODO update sync logic to check for new latest snapshot after each send
-# [x] TODO config zfsync user (as sender and receiver)
-
-# EXPLINATIONS:
-# `awk 'FNR <= 1'` does the same as `head -n 1` but prevents sigpipe errors from head quitting before output is finished
+# NOTES:
+# `awk 'FNR <= 1'` does the same as `head -n 1` but prevents sigpipe errors from head closing the pipe before output is finished
 
 readonly AUTOSNAPPROP="${AUTOSNAPPROP:-"com.sun:auto-snapshot"}" # dataset user property (set false to exclude dataset from snapshoting and backups)
 readonly AUTOMIRRORPROP="${AUTOMIRRORPROP:-"${AUTOSNAPPROP}"}"
-# readonly AUTOPRUNEPROP="${AUTOPRUNEPROP:-"${AUTOSNAPPROP}"}"
 readonly SNAPPREFIX="${SNAPPREFIX:-"zfsync_"}" # prefix for snapshot name
 readonly DATECMD="${DATECMD:-"date -u +%F_%H-%M-%S_UTC"}" # command to generate snapshot name timestamp
 
@@ -45,19 +34,12 @@ warn() {
   printf "\e[1m\e[35m${MSG}\e[0m\n" "$@" >&2
 }
 
-error() {
-  local -r MSG="$1"; shift
-  # shellcheck disable=2059 # allow variable in printf format string
-  printf "\e[1m\e[31m${MSG}\e[0m\n" "$@" >&2
-  ((ERR++))
-}
-
 fatal() {
   local -r MSG="$1"; shift
   # shellcheck disable=2059 # allow variable in printf format string
   printf "\e[1m\e[31m${MSG}\e[0m\n" "$@" >&2
   ((ERR++))
-  false
+  exit $ERR
 }
 
 declare ZFS
@@ -114,7 +96,7 @@ create_remote() {
   SOURCE="$1"
   FIRST=$($ZFS list -t snap -Ho name -s createtxg "${SOURCE}" | awk 'FNR <= 1')
   configbuffer
-  $ZFS send -PLcew "${FIRST}" | $BUFFER | $RPC receive -s "${SOURCE}"
+  $ZFS send -PLcew "${FIRST}" | $BUFFER | $RPC receive -sv "${SOURCE}"
 }
 
 resume_remote() {
@@ -122,7 +104,7 @@ resume_remote() {
   SOURCE="$1"
   TOKEN="$2"
   configbuffer
-  $ZFS send -Pe -t "${TOKEN}" | $BUFFER | $RPC receive -s "${SOURCE}"
+  $ZFS send -Pe -t "${TOKEN}" | $BUFFER | $RPC receive -sv "${SOURCE}"
 }
 
 update_remote() {
@@ -143,7 +125,7 @@ update_remote() {
       | awk "\$2 > $CREATETXG { print \$1; exit }")"
     if [ -n "${NEXTSNAP}" ]; then
       configbuffer
-      $ZFS send -PLcew -i "${STARTSNAP}" "${NEXTSNAP}" | $BUFFER | $RPC receive -s "${SOURCE}"
+      $ZFS send -PLcew -i "${STARTSNAP}" "${NEXTSNAP}" | $BUFFER | $RPC receive -sv "${SOURCE}"
     else
       $RPC status "${SOURCE}"
     fi
@@ -287,20 +269,13 @@ configuser() {
   fi
 }
 
-restart_as_root() {
-  if [ "$(id -u)" -ne 0 ]; then
-    warn "restarting as root ..."
-    exec sudo -E "$0" "$@"
-  fi
-}
-
 allowsend() {
   local -r DATASET="${1:?"missing dataset argument"}"
   local -r USER="${2:-"zfsync"}"
   # shellcheck disable=2016 # don't expand command below
   id "${USER}" >/dev/null 2>&1 \
     || fatal 'user %s does not exist - consider running `%s configuser %s`' "${USER}" "$(basename "$0")"
-  local -r PERMS="send,snapshot,bookmark,hold,mount"
+  local -r PERMS="send,snapshot,bookmark,hold,mount,destroy"
   log "granting '%s' permissions to '%s' on dataset '%s'" "${PERMS}" "${USER}" "${DATASET}"
   $ZFS allow "${USER}" "${PERMS}" "${DATASET}"
   $ZFS allow "${DATASET}"
@@ -408,80 +383,86 @@ prune() {
   )
 }
 
+run_as_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    warn "restarting as root ..."
+    exec sudo -E "$0" "$@"
+  else
+    "$@"
+  fi
+}
+
 readonly CMD="${1:-}"
 [ $# -gt 0 ] && shift
 case "${CMD}" in
   'snap'|'snapshot')
-    # help: \nsnap|snapshot: create new snapshot(s)
+    # help: \nsnapshot: create new snapshot(s)
     # help:   zfsync snapshot [-r|-d depth] <dataset> ...
-    snapshot "$@";;
+    snapshot "$@" ;;
   'mirror')
     # help: \nmirror: mirror snapshot(s) to remote server
     # help:   zfsync mirror <destination> [-r|-d depth] <dataset> ...
     HOST="${1:?"missing hostname argument"}"; shift
     connect "${HOST}"
-    mirror "$@";;
+    mirror "$@" ;;
   'backup')
     # help: \nbackup: run `snap` and then `mirror` in a single command
     # help:   zfsync backup <destination> [-r|-d depth] <dataset> ...
     HOST="${1:?"missing hostname argument"}"; shift
     snapshot "$@"
     connect "${HOST}"
-    mirror "$@";;
+    mirror "$@" ;;
   'prune')
     # help: \nprune: prune old snapshots
     # help:   zfsync prune [-r|-d depth] [dataset]...
-    prune "$@";;
+    prune "$@" ;;
   'rprune')
     # help: \nrprune: prune old snapshots on remote backup server
     # help:   zfsync rprune <destination> [-r|-d depth] [dataset]...
     HOST="${1:?"missing hostname argument"}"; shift
     connect "${HOST}"
-    $RPC prune "$@";;
+    $RPC prune "$@" ;;
   'server')
     # help: \nserver: run in server mode on the backup host (from .ssh/authorized_keys file)
     # help:   zfsync server <dataset_root>
-    server "$@";;
+    server "$@" ;;
   'list')
     # help: \nlist: run `zfs list` remotely on backup server (ie. query the backup server from the client)
-    # help:   zfsync list <host> [options] <dataset> ...
+    # help:   zfsync list <destination> [options] <dataset> ...
     HOST="${1:?"missing hostname argument"}"; shift
     connect "${HOST}"
-    $RPC list "$@";;
+    $RPC list "$@" ;;
   'destroy')
     # help: \ndestroy: run `zfs destroy` remotely on backup server (ie. destroy dataset on server from the client)
-    # help:   zfsync destroy <host> [options] <dataset>
+    # help:   zfsync destroy <destination> [options] <dataset>
     HOST="${1:?"missing hostname argument"}"; shift
     connect "${HOST}"
-    $RPC destroy "$@";;
+    $RPC destroy "$@" ;;
   'recover')
     # help: \nrecover: run `zfs send` remotely on backup server (ie. to restore a snaphshot from the backup server)
-    # help:   zfsync recover <host> [options] <dataset>
+    # help:   zfsync recover <destination> [options] <dataset>
     HOST="${1:?"missing hostname argument"}"; shift
     connect "${HOST}"
-    $RPC send "$@";;
+    $RPC send "$@" ;;
   'configuser')
     # help: \nconfiguser: create zfsync user, /etc/zfsync directory, and /etc/zfsync/id_ed25519 ssh key
     # help:   zfsync configuser [username] [home_dir]
-    restart_as_root configuser "$@"
-    configuser "$@";;
+    run_as_root configuser "$@" ;;
   'allowsend')
     # help: \nallowsend: delegate zfs permissions to zfsync user to be able to send dataset (on client)
     # help:   zfsync allowsend <dataset> [username]
-    restart_as_root allowsend "$@"
-    allowsend "$@";;
+    run_as_root allowsend "$@" ;;
   'allowreceive')
     # help: \nallowreceive: delegate zfs permissions to zfsync user to be able to receive into dataset (on server)
     # help:   zfsync allowreceive <dataset> <key> [quota] [username]
-    restart_as_root allowreceive "$@"
-    allowreceive "$@";;
+    run_as_root allowreceive "$@" ;;
   'version')
-    echo "zfsync-${VERSION}";;
+    echo "zfsync-${VERSION}" ;;
   *)
-    [ "${CMD}" = "-?" ] || error "\nfatal error: unknown command%s" "${CMD:+": \`${CMD}\`"}"
+    [ "${CMD}" = "-?" ] || $(fatal "fatal error: unknown command%s" "${CMD:+": \`${CMD}\`"}") || : # use subshell to prevent script from exiting
     log 'zfsync is a shell script to create and mirror zfs snapshots.\nusage:'
     grep '# help: ' "$0" | grep -v 'grep' | sed 's/ *# help: //g' | sed 's/\\n/\n/g'
     # shellcheck disable=2016 # don't expand command below
-    log 'see `man zfsync` for more information'
+    log '\nsee `man zfsync` for more information'
     ;;
 esac

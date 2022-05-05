@@ -6,7 +6,7 @@
 # script linted with shellcheck (https://www.shellcheck.net/)
 # initially meant to be posix sh compatable, but could not work out reliable enough error handling with posix sh
 
-readonly VERSION="0.0.2"
+readonly VERSION="0.0.3"
 
 set -Eeuo pipefail # fast fail on errors, undefined variables, and pipeline errors
 
@@ -170,7 +170,8 @@ mirror() {
 
 server() { # run from authorized_keys file on the backup server (ie. command="zfsync receive zpool/backups")
   local -a ARGS=( )
-  local -r TARGET="${1:?"missing dataset path prefix argument"}" # the dataset path prefix including pool name (ie. zpool/backups)
+  [ -n "$1" ] || fatal 'zfsync server command requires dataset path prefix argument'
+  local -r TARGET="$1" # the dataset path prefix including pool name (ie. zpool/backups)
   prepare() { # function to add local dataset prefix to datasets
     local -r OPTSTRING="$1" # getopts optstring of allowable flags (ie. ":rd:Ho:t:s:S:")
     shift
@@ -196,8 +197,9 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
     fi
   }
   # shellcheck disable=2086 # use word splitting below
-  set -- ${SSH_ORIGINAL_COMMAND}
-  local -r SUBCMD="${1:-}"; shift
+  set -- ${SSH_ORIGINAL_COMMAND:-}
+  local -r SUBCMD="${1:-}"
+  [ $# -gt 0 ] && shift
   case "${SUBCMD}" in
     'status')
       local -r SOURCE="$1"
@@ -223,22 +225,23 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
       prepare ":Penvt:Fhsuo:x:dA" "$@"
       ${BUFFER} | $ZFS receive "${ARGS[@]}" >&2
       # shellcheck disable=2124 # use last item in array as string
-      SSH_ORIGINAL_COMMAND="status ${@: -1}" server "${TARGET}";;
+      SSH_ORIGINAL_COMMAND="status ${@: -1}" server "${TARGET}" ;;
     'list')
       prepare ":rd:Hpo:t:s:S:" "$@"
-      $ZFS list "${ARGS[@]}";;
+      $ZFS list "${ARGS[@]}" ;;
     'send')
       prepare ":DLPRbcehnpvwi:I:" "$@"
-      $ZFS send "${ARGS[@]}";;
+      $ZFS send "${ARGS[@]}" ;;
     'destroy')
       prepare ":Rdfnprv" "$@"
-      $ZFS destroy "${ARGS[@]}";;
+      $ZFS destroy "${ARGS[@]}" ;;
     'prune')
       prepare ":frd:" "$@"
-      prune "${ARGS[@]}";;
+      prune "${ARGS[@]}" ;;
+    'test')
+      log 'authorized_keys configured for local user %s and prefix: %s' "$(id -un)" "${TARGET}" ;;
     *)
-      fatal 'fatal error: unknown zfsync server command: %s\n' "$SSH_ORIGINAL_COMMAND"
-      ;;
+      fatal 'fatal error: unknown zfsync server command: %s\n' "${SSH_ORIGINAL_COMMAND:-}" ;;
   esac
 }
 
@@ -327,7 +330,9 @@ prune() {
   if [ "${1:-}" = '-f' ]; then # actually destroy snapshots
     local -r DESTROY="$ZFS destroy"; shift
   else # just do a dry run
-    warn 'performing a dry run; use the -f argument to actually destroy snapshots'
+    warn 'performing a dry run'
+    warn 'bold snapshots (on stderr) will be retained'
+    warn 'use the -f flag to destroy other snapshots (on stdout)'
     local -r DESTROY=":" # this is a noop
   fi
 
@@ -370,8 +375,10 @@ prune() {
       fi # then save everything over 10 years
     fi
     if [ "${PRUNE}" = true ]; then
-      warn 'destroying %s' "${NAME}"
+      echo "${NAME}"
       $DESTROY "${NAME}" || ERR=$((ERR+1))
+    else
+      log '%s' "${NAME}"
     fi
     PREV=( [CREATION]="$CREATION" [DATASET]="$DATASET" [SNAPSHOT]="$SNAPSHOT" )
   done < <( # need this to be in a subshell so the while loop can increment ERR

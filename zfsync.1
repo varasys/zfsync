@@ -116,8 +116,32 @@ ensured that we could not access each others data (ie. we don't have each
 others encryption keys). So marginally trusted can be considered to mean
 "not malicous" and willing to allow ssh access to a specific command using
 the
-.Xr ssh 1
+.Xr sshd 8
 authorized_keys mechanism.
+.Pp
+The features of
+.Nm
+that make it robust are:
+.Bl -bullet -offset indent -compact
+.It
+No metadata stored in dataset (such as holds or other "state" metadata)
+.It
+All snapshots have corresponding bookmark (in case the snapshot is destroyed
+to save space the bookmark can still be used as an incremental source)
+.It
+Resumable send/receive operations (interrupted transfers will resume if
+possible)
+.It
+Sends snapshots individually (and will always keep running until thet most
+snapshot on local is transferred to remote; even if it was created after
+the mirror operation started)
+.El
+.Pp
+The philosopyh is that if the dataset does not exist on the remote server it
+will be created, otherwise, as long as it can find a snapshot or bookmark
+on the local computer matching the latest snapshot on the remote computer it
+will send all snapshots from local to remote until remote has the latest.
+
 .Ss SUMMARY OF OPERATION
 No configuration is required to use the
 .Nm Cm snapshot
@@ -160,9 +184,13 @@ ssh access by a non-privileged user, and to run
 .Ar filesystem_root
 instead of a login shell which will restrict access to a limited number of
 .Xr zfs 8
-commands that are sandboxed to
+commands, defined in the server function in the script, that are sandboxed to
 .Ar filesystem_root
 and its descendants.
+.Pp
+The
+.Nm Cm prune
+command prunes old snapshots according to a pre-defined retention schedule.
 .Pp
 The
 .Cm configuser ,
@@ -176,9 +204,10 @@ required.
 The
 .Cm list ,
 .Cm destroy ,
+.Cm recover ,
 and
-.Cm recover
-subcommands are provided to list, destroy, and recover snapshots from the
+.Cm rprune
+subcommands are provided to list, destroy, recover, and prune snapshots on the
 remote backup server.
 These subcommands are simple wrappers that forward the command over ssh and run
 it on the remote backup server (where the
@@ -191,6 +220,7 @@ On systems that have
 the
 .Em zfsync-snapshot.service ,
 .Em zfsync-mirror.service ,
+.Em zfsync-prune.service ,
 and
 .Em zfsync-snapshot.timer
 units are installed in order to automate periodic snapshots and mirror commands.
@@ -221,8 +251,16 @@ environment variables with the options and datasets to be passed to the
 .Nm Cm mirror
 command.
 .Pp
-Two separate configuration files are used in order to be able to run one or
-both services; but typically one config file can be a symlink to the other.
+The zfsync-mirror.service has a "Wants" and "Before" dependency on the
+.Em zfsync-prune.service
+service which will only run if the
+.Pa /etc/zfsync/prune.conf
+file exists and defines the
+.Ev DATASETS
+environment variable with the options and datasets to be pruned.
+.Pp
+Three separate configuration files are used in order to be able to run one or
+both services; but typically one config file can be a symlink to the others.
 
 .Sh SUBCOMMANDS
 .Bl -tag -width ""
@@ -255,7 +293,7 @@ command so they are created atomically.
 .Bl -tag -width "-o"
 .It Fl r
 Create recursive snapshots of all descendant filesystems.
-.It Fl d Ar property Ns = Ns Ar depth
+.It Fl d Ar depth
 Create recursive snapshots of
 .Ar depth
 levels of descendant filesystems.
@@ -329,12 +367,16 @@ every 1 year for the past ten years
 Since this command is destructive, it requires the use of the
 .Fl f
 flag to actually destroy snapshots.
-Otherwise it outputs to stdout the snapshots that would be destroyed (ie. so
-you could pipe them to
+.Pp
+Snapshots schedule to be pruned will be listed on stdout, and snapshots
+to be retained will be listed on stderr with bold text. If the
+.Fl f
+flag is specified the snapshots listed on stdout will actually be destroyed,
+otherwise the user can use the output of stdout to manually process (ie. using
+the
 .Xr xargs 1
-for further processing for example), and to
-stderr (ie. for information) the snapshots that would be retained.
-Use the
+utility).
+.Pp
 The
 .Fl r
 and
@@ -480,23 +522,29 @@ command.
 .Xc
 This command creates the
 .Em zfsync
-system user, and the
-.Pa /etc/zfsync
-directory, and a symlink from
-.Pa /etc/zfsync/.ssh
+system user with a home directory at
+.Pa /usr/local/share/zfsync ,
+a symlink from
+.Pa /usr/local/share/zfsync/.ssh
 to
-.Pa ./ ,
-and a
+.Pa /usr/local/share/zfsync/ssh
+(for convienence), and a
 .Xr ssh 1
 key pair in
-.Pa /etc/zfsync/ .
+.Pa /usr/local/share/zfsync/.ssh .
 .Pp
 This command should be run on both the local computer and the remote backup
 server with root permissions before the
 .Nm Cm allowsend
 or
 .Nm Cm allowreceive
-commands are user.
+commands are used.
+.Pp
+The
+.Cm allowreceive
+command will update the
+.Pa /usr/loral/share/zfsync/.ssh/authorized_keys
+file in this home directory.
 .It Xo
 .Nm \" allowsend
 .Cm allowsend
@@ -506,7 +554,7 @@ commands are user.
 This command should be run on the local computer with root permissions to
 delegate permissions to the
 .Em zfsync
-system user to be able to take and send snapshots.
+system user to be able to list, take, send, and prune snapshots.
 .Pp
 The output of this command will include a
 .Xr ssh 1
@@ -525,7 +573,7 @@ command on the remote backup server.
 This command should be run on the remote backup server with root permissions
 to delegate permissions to the
 .Em zfsync
-system user to be able to receive snapshots under the
+system user to be able to list, receive, send, and prune snapshots under the
 .Ar filesystem
 dataset.
 .Pp
@@ -585,7 +633,7 @@ from being included in a
 .Nm
 .Cm mirror
 operation when set to false (default:
-.Em com.sun:auto-snapshot ).
+.Em com.sun:auto-snapshot ) .
 .It Ev SNAPPREFIX
 The prefix applied to snapshot names (default:
 .Em zfsync_ ) .
@@ -597,149 +645,153 @@ The command to use to buffer I/O on the sending and receiving side. The
 default for this if
 .Cm mbuffer
 is installed is
-.Cm mbuffer -s 128k -q
-or
+.Cm mbuffer -s 128k -q ,
+otherwise
 .Cm cat
 if
 .Cm mbuffer
-is not installed.
+is not installed. The
+.Fl r Ar rate
+argument may be provided to
+.Cm mbuffer
+to throttle the transfer rate.
 .El
 
 .Sh FILES
-The following files are configured with the
-.Nm
-.Cm configuser
-command which creates the system zfsync user, 
-.Pa /etc/zfsync/
-directory,
-.Pa /etc/zfsync.ssh
-symlink, and ssh-keys.
-
-.Ss On both the computer being backed up and the remote backup server
-.Bl -tag -width Ds
+.Bl -tag -width Ds -compact
 .It Pa /etc/zfsync
-Home directory for the zfsync system user created by
-.Nm Cm configuser .
-.It Pa /etc/zfsync/.ssh
-Symlink to
-.Pa ./
-which allows ssh config files to be located in
-.Pa /etc/zfsync/
-instead of
-.Pa /etc/zfsync/.ssh
-created by
-.Nm Cm configuser .
-.El
+.It Pa /etc/zfsync/snapshot.conf
+.It Pa /etc/zfsync/mirror.conf
+.It Pa /etc/zfsync/prune.conf
+If systemd is installed this directory and config files are used to
+configure the zfsync-snapshot.service, zfsync-mirror.service,
+and zfsync-prune.service services.
 
-.Ss On the computer being backed up:
-.Bl -tag -width Ds
-.It Pa /etc/zfsync/config
-ssh configuration file (only required if additional ssh configuration is
-required to connect to the remote backup server such as custom port or jump
-host).
-.It Pa /etc/zfsync/id_ed25519
-Public ssh key for zfsync user created by
-.Nm Cm configuser .
-.It Pa /etc/zfsync/id_ed25519.pub
-Private ssh key for zfsync user created by
-.Nm Cm configuser .
-.El
-
-.Ss On the remote backup server:
-.Bl -tag -width Ds
-.It Pa /etc/zfsync/authorized_keys
-The authorized_keys file on the remote backup server to allow ssh login from
-the server being backed up.
-This file should have a line containing the following where
-.Ar filesystem
-is the root filesystem under which to store the received filesystems, and
-.Ar key
-is from the
-.Pa /etc/zfsync/id_ed25519.pub
-file on the sending computer.
-This can be configured automatically with the
-.Nm
-.Cm allowreceive
+.It Pa /usr/local/share/zfsync
+.It Pa /usr/local/share/zfsync/.ssh/id_ed25519
+.It Pa /usr/local/share/zfsync/.ssh/id_ed25519.pub
+This is the home directory and ssh keys for the system zfsync user
+created with the
+.Nm Cm configuser
 command.
 
-restrict,command=\(dqzfsync server
-.Ar filesystem
-\(dq ssh-ed25519
-.Ar key
+.It Pa /usr/local/share/zfsync/.ssh/authorized_keys
+This is the authorized_keys file created/updated with the
+.Nm Cm allowreceive
+command.
 .El
 
 .Sh EXIT STATUS
-.Ex -std
+The
+.Nm
+utility exits 0 or success, or >0 if one or more errors occur indicating the
+number of errors.
 
 .Sh EXAMPLES
 The following examples are intended to be shown in the same order they would be
-used when configuring a system the first time. The first set of examples shows
-how to configure on the computer being backed up, and the second set of
-examples shows how to configure the remote backup server.
+used when configuring a system the first time.
+.Pp
+The following terms differentiate the local and remote computer in these examples.
+.Bl -tag -width "REMOTE" -compact -offset indent
+.It LOCAL
+the local computer being mirrored/backed up
+.It REMOTE
+the remote computer receiving the mirror/backup
+.El
 
-.Ss On the computer being backed up:
+.Ss Configure the LOCAL computer
 
-Configure the zfsync system user which will create the zfsync user,
-.Pa /etc/zfsync/
-directory, and ssh keys.
+Configure the zfsync system user which will create the the
+.Pa /usr/local/share/zfsync
+home directory, and ssh keys in the
+.Pa /usr/local/share/zfsync/.ssh/
+directory.
 .Pp
 .Dl $ zfsync configuser
 
 Delegate send permissions to the zfsync user for the filesystem(s) to be backed
 up. Copy the key from the output of this command to be used as input to the
-.Nm
-.Cm allowreceive
+.Nm Cm allowreceive
 command (see example below).
 .Pp
 .Dl $ zfsync allowsend zpool/home
 
-Exclude a subfilesystem from being included in snapshots.
+Exclude a subfilesystem from being included in snapshots (as needed).
 .Pp
 .Dl $ zfs set io.varasys:auto-snapshot=false zpool/home/tmp
 
-Create recursive snapshots
-.Pp
-.Dl $ zfsync snapshot -r zpool/home
+.Ss Configure the REMOTE computer
 
-Mirror filesystem snapshots to remote host (see examples below showing how
-to configure remote host to receive the snapshots). Note that the first time
-you run this you will likely be prompted to verify the authenticity of the
-remote backup server based on its
-.Xr ssh 1
-key fingerprint.
-This requires you to be able to type 'yes' so you should always run the
-.Nm Cm mirror
-command at least once before relying on an automated systemd service or
-chron job.
-.Pp
-.Dl $ zfsync mirror my.backupserver.com -r zpool/home
-
-.Ss On the remote backup server:
-
-Configure the zfsync system user which will create the zfsync user,
-.Pa /etc/zfsync/
-directory, and
-.Pa /etc/zfsync/authorized_keys
-file.
+Configure the zfsync system user which will create the the
+.Pa /usr/local/share/zfsync
+home directory, and ssh keys in the
+.Pa /usr/local/share/zfsync/.ssh/
+directory. The ssh keys aren't strictly necessary, but the .ssh directory
+is since it will contain the 'authorized_keys' file.
 .Pp
 .Dl $ zfsync configuser
 
 Delegate receive permissions to the zfsync user for the root filesystem
 under which received filesystems will be stored (<key> is from the output of
 the
-.Nm
-.Cm allowsend
+.Nm Cm allowsend
 command). This command will automatically configure the
-.Pa /etc/zfsync/authorized_keys
-file.
+.Pa /usr/local/share/zfsync/.ssh/authorized_keys
+file with the root filesystem and <key>.
 .Pp
 .Dl $ zfsync allowreceive zpool/backups <key>
 
+.Ss Create, mirror, and prune snapshots on LOCAL computer
 
+Create recursive snapshots
+.Pp
+.Dl $ zfsync snapshot -r zpool/home
 
+Mirror filesystem snapshots to REMOTE. Note that the first time
+you run this you will likely be prompted to verify the authenticity of the
+remote backup server based on its
+.Xr ssh 1
+key fingerprint and update the LOCAL
+.Pa /usr/local/share/zfsync/.ssh/known_hosts
+file.
+This requires you to be able to type 'yes' so you should always run the
+.Nm Cm mirror
+command at least once before relying on an automated systemd service or
+chron job.
+.Pp
+.Dl $ zfsync mirror <destination> -r zpool/home
+
+Prune LOCAL snapshots
+.Pp
+.Dl $ zfsync prune -f zpool/home
+
+Prune REMOTE snapshots
+.Pp
+.Dl $ zfsync rprune <destination> -f zpool/home
 
 .Sh SEE ALSO
 .Xr ssh 1 ,
 .Xr sshd 8 ,
 .Xr zfs 8 ,
 .Xr zpool 8
+
+.Sh CAVEATS
+The only time the
+.Nm
+script will destroy data is when
+.Nm Cm prune
+is called with the
+.Fl f
+flag. Because of this, there are a couple scenarios where manual
+intervention may be required:
+.Bl -bullet -offset indent -compact
+.It
+If the latest snapshot on REMOTE does not have a corresponding snapshot
+or bookmark on LOCAL, matually rollback REMOTE to a common snapshot or
+bookmark that exists on LOCAL.
+.It
+If an incremental transfer was interrupted, and the ending snapshot for
+the transfer was destroyed on LOCAL, then the transfer must be manually
+aborted on REMOTE with
+.Cm zfs receive Fl A Ar dataset .
+.El

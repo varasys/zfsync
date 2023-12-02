@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# simplest script I could come up with to backup datasets from one zpool to another locally
+
+# Check if the script is not run as root
+if [[ $EUID -ne 0 ]]; then
+    echo "Restarting script with sudo..."
+    exec sudo /bin/bash "$0" "$@"
+    exit
+fi
+
+set -eu
+
+SOURCE="${1:-}"
+TARGET="${2:-}"
+
+if [ -z "${SOURCE:-"${1:-}"}" ]; then
+    DEFAULT_SOURCE="wd18tb2311"
+    read -r -p "Enter SOURCE or press enter to use default ($DEFAULT_SOURCE): " SOURCE
+    SOURCE=${SOURCE:-$DEFAULT_SOURCE}
+fi
+if [ -z "${TARGET:-"${1:-}"}" ]; then
+    DEFAULT_TARGET="gd6tb2111/backups/vault"
+    read -r -p "Enter TARGET or press enter to use default ($DEFAULT_TARGET): " TARGET
+    TARGET=${TARGET:-$DEFAULT_TARGET}
+fi
+
+echo "SOURCE: $SOURCE"
+echo "TARGET: $TARGET"
+
+read -p "Do you want to take a snapshot? (y/n): " answer
+[ "$answer" = "y" ] && zfsync snapshot -r "$SOURCE"
+
+# List all datasets (filesystems and volumes) (the -n +2 drops the first line which is the pool name)
+for dataset in $(zfs list -H -o name -t filesystem,volume -r "$SOURCE" | tail -n +2); do
+    relative_dataset=${dataset#$SOURCE/}  # Get the relative path of the dataset
+    target_dataset="$TARGET/$relative_dataset"
+
+    # Check if the target dataset exists
+    if zfs list "$target_dataset" &> /dev/null; then
+        # Target dataset exists, perform incremental send
+        latest_source=$(zfs list -H -o name -t snapshot -S creation "$dataset" | head -n1)
+        latest_target=$(zfs list -H -o name -t snapshot -S creation "$target_dataset" | head -n1)
+
+        if [ "${latest_source#*@}" != "${latest_target#*@}" ]; then
+            echo "Advancing $latest_target to $latest_source ..."
+            zfs send -Rbw -I "@${latest_target#*@}" "${latest_source}" | pv | zfs receive -s -v -d "$TARGET"
+        else
+            echo "$latest_target is already up to date"
+        fi
+    else
+        # Target dataset does not exist, perform full send
+        latest_source=$(zfs list -H -o name -t snapshot -S creation "$dataset" | head -n1)
+        echo "Sending full snapshot of $latest_source to $target_dataset ..."
+        zfs send -Rbw "${latest_source}" | pv | zfs receive -s -v -d "$TARGET"
+    fi
+done
+

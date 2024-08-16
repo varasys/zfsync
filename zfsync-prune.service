@@ -4,7 +4,7 @@ Requires=zfs-volumes.target
 After=zfs-volumes.target
 After=zfsync-snapshot.service
 After=zfsync-mirror.service
-ConditionPathExists=/etc/zfsync/prune.conf
+ConditionPathExists=/usr/local/etc/zfsync/prune.conf
 
 [Service]
 Type=oneshot

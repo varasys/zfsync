@@ -13,7 +13,7 @@ echo "PREFIX=${PREFIX:="/usr/local"}"
 echo "BINDIR=${BINDIR:="${DESTDIR}${PREFIX}/bin"}"
 echo "DOCDIR=${DOCDIR:="${DESTDIR}${PREFIX}/share/doc/zfsync"}"
 echo "MANDIR=${MANDIR:="${DESTDIR}${PREFIX}/share/man/man1"}"
-echo "ETCDIR=${ETCDIR:="${DESTDIR}/etc/zfsync"}"
+echo "ETCDIR=${ETCDIR:="${DESTDIR}${PREFIX}/etc/zfsync"}"
 echo "SYSTEMDDIR=${SYSTEMDDIR:="${DESTDIR}/etc/systemd/system"}"
 echo "COMPLETEDIR=${COMPLETEDIR:="${DESTDIR}${PREFIX}/share/bash-completion/completions"}"
 echo

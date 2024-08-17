@@ -9,5 +9,8 @@ ConditionPathExists=/usr/local/etc/zfsync/snapshot.conf
 [Service]
 Type=oneshot
 User=zfsync
-EnvironmentFile=/etc/zfsync/snapshot.conf
+EnvironmentFile=/usr/local/etc/zfsync/snapshot.conf
 ExecStart=nice -n 19 ionice -c 3 zfsync snap $DATASETS
+
+[Install]
+WantedBy=default.target

@@ -9,5 +9,8 @@ ConditionPathExists=/usr/local/etc/zfsync/prune.conf
 [Service]
 Type=oneshot
 User=zfsync
-EnvironmentFile=/etc/zfsync/prune.conf
+EnvironmentFile=/usr/local/etc/zfsync/prune.conf
 ExecStart=nice -n 19 ionice -c 3 zfsync prune -f $DATASETS
+
+[Install]
+WantedBy=default.target

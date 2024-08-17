@@ -14,48 +14,42 @@ echo "BINDIR=${BINDIR:="${DESTDIR}${PREFIX}/bin"}"
 echo "DOCDIR=${DOCDIR:="${DESTDIR}${PREFIX}/share/doc/zfsync"}"
 echo "MANDIR=${MANDIR:="${DESTDIR}${PREFIX}/share/man/man1"}"
 echo "ETCDIR=${ETCDIR:="${DESTDIR}${PREFIX}/etc/zfsync"}"
-echo "SYSTEMDDIR=${SYSTEMDDIR:="${DESTDIR}/etc/systemd/system"}"
+echo "SYSTEMDDIR=${SYSTEMDDIR:="${DESTDIR}${PREFIX}/lib/systemd/system"}"
 echo "COMPLETEDIR=${COMPLETEDIR:="${DESTDIR}${PREFIX}/share/bash-completion/completions"}"
 echo
 
 case "${1:-"install"}" in
   install)
-    install -v -d "${BINDIR}"
-    install -v -d "${DOCDIR}"
+    install -v -m 755 -D -t "${BINDIR}/" zfsync
+		install -v -D -t "${SYSTEMDDIR}/" zfsync-snapshot.service
+		install -v -D -t "${SYSTEMDDIR}/" zfsync-mirror.service
+		install -v -D -t "${SYSTEMDDIR}/" zfsync-prune.service
+		install -v -D -t "${SYSTEMDDIR}/" zfsync-snapshot.timer
+    install -v -D -t "${DOCDIR}/" inittest.sh
+    install -v -D -t "${DOCDIR}/" README.md
+    install -v -D -t "${DOCDIR}/" install.sh
+    install -v -D -t "${DOCDIR}/" UNLICENSE
+    install -v -D -t "${ETCDIR}/" snapshot.conf.sample
+    install -v -D -t "${COMPLETEDIR}/zfsync" zfsync-completion.bash
     install -v -d "${MANDIR}"
-    install -v -d "${ETCDIR}"
-    install -v -d "${COMPLETEDIR}"
-    install -v -m 755 zfsync "${BINDIR}/"
-    if [ -d "${SYSTEMDDIR}" ]; then
-      install -v zfsync-snapshot.service "${SYSTEMDDIR}/"
-      install -v zfsync-mirror.service "${SYSTEMDDIR}/"
-      install -v zfsync-prune.service "${SYSTEMDDIR}/"
-      install -v zfsync-snapshot.timer "${SYSTEMDDIR}/"
-      [ -z "${DESTDIR}" ] && systemctl daemon-reload # only run if installing into current system
-    fi
-    install -v inittest.sh "${DOCDIR}/"
-    install -v README.md "${DOCDIR}/"
-    install -v install.sh "${DOCDIR}/"
-    install -v UNLICENSE "${DOCDIR}/"
-    install -v snapshot.conf.sample "${ETCDIR}/"
-    install -v -T zfsync-completion.bash "${COMPLETEDIR}/zfsync"
-    gzip  --to-stdout zfsync.1 > "${MANDIR}/zfsync.1.gz"
+    gzip --to-stdout zfsync.1 > "${MANDIR}/zfsync.1.gz"
     "${BINDIR}/zfsync" configuser
 
     printf '\nfinished installing zfsync\n\nread the man page for configuration and use instructions\n\n'
+    printf '\nrun `systemctl daemon-reload`\n\n'
     ;;
   uninstall)
+		systemctl disable --now zfsync-snapshot.service || :
+		systemctl disable --now zfsync-mirror.service || :
+		systemctl disable --now zfsync-snapshot.timer || :
     rm -v "${BINDIR}/zfsync"
     rm -v "${MANDIR}/zfsync.1.gz"
     rm -v -rf "${DOCDIR}"
     rm -v -rf "${ETCDIR}"
     rm -v "${COMPLETEDIR}/zfsync"
-    if [ -d "${SYSTEMDDIR}" ]; then
-      rm -v "${SYSTEMDDIR}/zfsync-snapshot.service"
-      rm -v "${SYSTEMDDIR}/zfsync-mirror.service"
-      rm -v "${SYSTEMDDIR}/zfsync-snapshot.timer"
-      [ -z "${DESTDIR}" ] && systemctl daemon-reload # only run if installing into current system
-    fi
+		rm -v "${SYSTEMDDIR}/zfsync-snapshot.service"
+		rm -v "${SYSTEMDDIR}/zfsync-mirror.service"
+		rm -v "${SYSTEMDDIR}/zfsync-snapshot.timer"
     printf '\nfinished uninstalling zfsync\n\n'
     ;;
 esac

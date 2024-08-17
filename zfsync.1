@@ -230,7 +230,7 @@ The
 service will start the
 .Em zfsync-snapshot.service
 unit which will only run if the
-.Pa /etc/zfsync/snapshot.conf
+.Pa /usr/local/etc/zfsync/snapshot.conf
 file exists and defines the
 .Ev DATASETS
 environment variable with the options and datasets to be passed to the
@@ -242,7 +242,7 @@ The
 is included as a "Wants" and "After" dependency in the
 .Em zfsync-snapshot.service
 so it will be executed after the snapshots are taken if the
-.Pa /etc/zfsync/mirror.conf
+.Pa /usr/local/etc/zfsync/mirror.conf
 file exists and defines the
 .Ev DATASETS
 and
@@ -254,7 +254,7 @@ command.
 The zfsync-mirror.service has a "Wants" and "Before" dependency on the
 .Em zfsync-prune.service
 service which will only run if the
-.Pa /etc/zfsync/prune.conf
+.Pa /usr/local/etc/zfsync/prune.conf
 file exists and defines the
 .Ev DATASETS
 environment variable with the options and datasets to be pruned.
@@ -659,10 +659,10 @@ to throttle the transfer rate.
 
 .Sh FILES
 .Bl -tag -width Ds -compact
-.It Pa /etc/zfsync
-.It Pa /etc/zfsync/snapshot.conf
-.It Pa /etc/zfsync/mirror.conf
-.It Pa /etc/zfsync/prune.conf
+.It Pa /usr/local/etc/zfsync/
+.It Pa /usr/local/etc/zfsync/snapshot.conf
+.It Pa /usr/local/etc/zfsync/mirror.conf
+.It Pa /usr/local/etc/zfsync/prune.conf
 If systemd is installed this directory and config files are used to
 configure the zfsync-snapshot.service, zfsync-mirror.service,
 and zfsync-prune.service services.

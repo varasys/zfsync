@@ -3,61 +3,49 @@
 # This script is designed to adhere to best practices for creating ZFS pools and datasets.
 # Note: It's not advisable to rely solely on default property inheritance at the pool level.
 # Instead, explicitly set properties on datasets that may serve as roots for backups.
-# This ensures that these datasets remain accessible, especially in scenarios where the encryption root is not included in the backup.
-
+# Note: you must have the actual encryption root dataset for every child dataset that relies on it
+# (ie. backing up the child dataset without the encryption root is not useful)
 
 # Function to create a ZFS pool
 create_zpool() {
-    echo "Creating ZFS pool ..."
-    sudo zpool create \
-      -o ashift=12 \
-      -o autotrim=on \
-      -O acltype=posixacl \
-      -O mountpoint=none \
-      -O compression=on \
-      -O dnodesize=auto \
-      -O normalization=formD \
-      -O relatime=on \
-      -O xattr=sa \
-      "$@"
+	POOL="${1:?missing pool name}"
+  shift
+	echo "Creating ZFS pool $POOL on $@"
+	sudo zpool create \
+		-o ashift=12 \
+		-o autotrim=on \
+		-O acltype=posixacl \
+		-O mountpoint=none \
+		-O compression=on \
+		-O dnodesize=auto \
+		-O normalization=formD \
+		-O relatime=on \
+		-O xattr=sa \
+		"$POOL" \
+		"$@"
 }
 
 # Function to create an encrypted ZFS dataset
 create_encrypted_zfs() {
-    echo "Creating encrypted ZFS dataset ..."
-    create_unencrypted_zfs \
+    echo "Creating encrypted ZFS dataset $@"
+    sudo zfs create \
       -o encryption=on \
       -o keyformat=passphrase \
       -o keylocation=prompt \
       "$@"
 }
 
-# Function to create an unencrypted ZFS dataset
-create_unencrypted_zfs() {
-    echo "Creating unencrypted ZFS dataset..."
-    sudo zfs create \
-      -o acltype=posixacl \
-      -o compression=on \
-      -o dnodesize=auto \
-      -o normalization=formD \
-      -o relatime=on \
-      -o xattr=sa \
-      "$@"
-}
-
-# Get the script's base name to determine the action
-script_name="$(basename "$0")"
+COMMAND="${1:?missing command}"
+shift
 
 # Case statement to handle different symlink names
-case "$script_name" in
-    "mkfs.zpool")
+case "$COMMAND" in
+    "pool")
         create_zpool "$@";;
-    "mkfs.zfs")
+    "encryptionroot")
         create_encrypted_zfs "$@";;
-    "mkfs.zfs-clear")
-        create_unencrypted_zfs "$@";;
     *)
-        echo "Unknown command"
-        exit 1
-        ;;
+			echo "usage: $(basename $0) pool 'name' 'vdev1' 'vdev2' ..."
+			echo "usage: $(basename $0) encryptionroot 'pool/dataset'"
+			exit 1;;
 esac

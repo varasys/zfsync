@@ -247,12 +247,12 @@ server() { # run from authorized_keys file on the backup server (ie. command="zf
 
 configuser() {
   local -r USER="${1:-"zfsync"}"
-  local -r HOMEDIR="${2:-"/usr/local/share/zfsync"}"
+  local -r HOMEDIR="${2:-"/usr/local/etc/zfsync"}"
   if id "${USER}" >/dev/null 2>&1; then
     warn 'user %s already exists' "${USER}"
   else
     useradd --home-dir "${HOMEDIR}" --no-create-home \
-      --shell "$(command -v bash || command -v sh)" --system "${USER}"
+      --shell "$SHELL" --system "${USER}"
     log 'user %s created' "${USER}"
   fi
   if [ -d "${HOMEDIR}" ]; then
@@ -452,7 +452,7 @@ case "${CMD}" in
     connect "${HOST}"
     $RPC send "$@" ;;
   'configuser')
-    # help: \nconfiguser: create zfsync user, /etc/zfsync directory, and /etc/zfsync/id_ed25519 ssh key
+    # help: \nconfiguser: create zfsync user, /usr/local/etc/zfsync directory, and /usr/local/etc/zfsync/id_ed25519 ssh key
     # help:   zfsync configuser [username] [home_dir]
     run_as_root configuser "$@" ;;
   'allowsend')

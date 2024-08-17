@@ -266,8 +266,9 @@ configuser() {
   if [ -f "${HOMEDIR}/.ssh/id_ed25519" ]; then
     warn 'ssh key %s already exists' "${HOMEDIR}/.ssh/id_ed25519"
   else
-    su -c "mkdir -p -m 700 '${HOMEDIR}/.ssh'" - "${USER}"
-    su -c "ssh-keygen -f '${HOMEDIR}/.ssh/id_ed25519' -t ed25519 -N ''" - "${USER}"
+    mkdir -p -m 700 "${HOMEDIR}/.ssh"
+    ssh-keygen -f "${HOMEDIR}/.ssh/id_ed25519" -t ed25519 -N ""
+		chown -R "${USER}:${USER}" "${HOMEDIR}/.ssh"
     log 'ssh key %s created' "${HOMEDIR}/.ssh/id_ed25519"
   fi
 }
